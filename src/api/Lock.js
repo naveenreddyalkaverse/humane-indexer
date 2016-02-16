@@ -9,6 +9,7 @@ import performanceNow from 'performance-now';
 import redisClient from './RedisClient';
 
 const LockAcquisitionError = RedisLock.LockAcquisitionError;
+const LockReleaseError = RedisLock.LockReleaseError;
 
 const logLevel = Config.has('LOG') ? Config.get('LOG') : 'info';
 
@@ -17,8 +18,8 @@ class DistributedLock {
         this.redisClient = redisClient();
         const lockConfig = Config.has('LOCKS') && Config.get('LOCKS');
         RedisLock.setDefaults({
-            timeout: lockConfig.timeout || 20000,
-            retries: lockConfig.retries || 3,
+            timeout: lockConfig.timeout || 200000,
+            retries: lockConfig.retries || 1000,
             delay: lockConfig.delay || 100
         });
     }
@@ -34,7 +35,20 @@ class DistributedLock {
                       console.log('Releasing lock: ', key);
                   }
 
-                  lock.release();
+                  return lock.release()
+                    .then(() => {
+                        if (logLevel === 'trace') {
+                            console.log('Released lock: ', key);
+                        }
+
+                        return true;
+                    })
+                    .catch(LockReleaseError, (error) => {
+                        console.error('Error in releasing lock: ', key, error);
+
+                        //throw error;
+                        return true;
+                    });
               }
           }))
           .catch(LockAcquisitionError, (error) => {
@@ -44,6 +58,10 @@ class DistributedLock {
     }
 
     shutdown() {
+        if (logLevel === 'trace') {
+            console.log('Shutting down: DistributedLock');
+        }
+
         this.redisClient.end(true);
         return true;
     }
@@ -104,7 +122,53 @@ export default class Lock {
         return this.instance.acquire(key);
     }
 
+    usingLock(operation, key, lockHandle, log) {
+        let finalResult = null;
+
+        const startTime = performanceNow();
+
+        if (lockHandle) {
+            return operation(lockHandle)
+              .then(result => {
+                  if (log) log((performanceNow() - startTime).toFixed(3));
+
+                  return result;
+              });
+        }
+
+        //const acquireLock = () =>
+        //  this.acquire(key).disposer((lockHandle, promise) => {
+        //      return lockHandle.release();
+        //  });
+
+        return this.acquire(key)
+
+          .then(handle => {
+              lockHandle = handle;
+
+              return operation(lockHandle);
+          })
+
+          //.finally(() => lockHandle.release())
+
+          .then((result) => {
+              finalResult = result;
+
+              return lockHandle.release();
+          })
+
+          .then(() => {
+              if (log) log((performanceNow() - startTime).toFixed(3));
+
+              return finalResult;
+          });
+    }
+
     shutdown() {
+        if (logLevel === 'trace') {
+            console.log('Shutting down: Lock');
+        }
+
         return this.instance.shutdown();
     }
 }

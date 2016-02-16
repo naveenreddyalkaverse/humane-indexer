@@ -41,6 +41,10 @@ class DistributedCache {
     }
 
     shutdown() {
+        if (logLevel === 'trace') {
+            console.log('Shutting down: DistributedCache');
+        }
+
         this.redisClient.end(true);
         return true;
     }
@@ -99,6 +103,10 @@ export default class Cache {
     store(key, data) {
         // if no schedule then create a schedule
         if (!this.schedule) {
+            if (logLevel === 'trace') {
+                console.log('Store: Scheduling Flush: No Keys');
+            }
+
             this.scheduleFlush();
         }
 
@@ -146,49 +154,58 @@ export default class Cache {
 
     scheduleFlush() {
         console.log(Chalk.yellow('Scheduling Flush'));
-        return this.lock.acquire(FlushSchedulerKey)
-          .then(handle => {
-              if (!this.schedule) {
-                  this.scheduleHandle = _.delay(this.flush.bind(this), 10000);
-                  this.schedule = true;
-              }
 
-              handle.release();
+        const operation = () => {
+            if (!this.schedule) {
+                this.scheduleHandle = _.delay(this.flush.bind(this), 10000);
+                this.schedule = true;
 
-              console.log(Chalk.yellow('Scheduled Flush'));
+                console.log(Chalk.yellow(`Scheduled Flush: ${this.scheduleHandle}`));
+            } else {
+                console.log(Chalk.yellow(`Schedule already exist`));
+            }
 
-              return true;
-          });
+            return true;
+        };
+
+        return this.lock.usingLock(operation, FlushSchedulerKey);
     }
 
     removeFlushSchedule() {
         console.log(Chalk.yellow('Removing Flush Schedule'));
-        return this.lock.acquire(FlushSchedulerKey)
-          .then(handle => {
-              if (this.schedule) {
-                  if (this.scheduleHandle) {
-                      clearTimeout(this.scheduleHandle);
-                  }
+        const operation = () => {
+            if (this.schedule) {
+                if (this.scheduleHandle) {
+                    clearTimeout(this.scheduleHandle);
+                }
 
-                  this.scheduleHandle = null;
-                  this.schedule = null;
-              }
+                this.scheduleHandle = null;
+                this.schedule = null;
+            }
 
-              handle.release();
+            return true;
+        };
 
-              console.log(Chalk.yellow('Removed Flush Schedule'));
-
-              return true;
-          });
+        return this.lock.usingLock(operation, FlushSchedulerKey, null,
+          (timeTaken) => console.log(Chalk.yellow('Removed Flush Schedule')));
     }
 
     flush(noSchedule) {
         console.log();
         console.log(Chalk.yellow('------------------------------------------------------'));
         console.log(Chalk.yellow('Starting aggregate flush...'));
+
+        if (logLevel === 'trace') {
+            console.log('Flushing: AggregatorCache. NoSchedule: ', noSchedule);
+        }
+
         return Promise.resolve(this.keys())
           .then(keys => {
               if (!keys || _.isEmpty(keys)) {
+                  if (logLevel === 'trace') {
+                      console.log('Removing Flush Schedule: found no keys');
+                  }
+
                   return this.removeFlushSchedule();
               }
 
@@ -197,21 +214,35 @@ export default class Cache {
                     console.log(Chalk.yellow('...Finished aggregate flush'));
                     console.log(Chalk.yellow('------------------------------------------------------'));
 
-                    this.schedule = null;
-                    this.scheduleHandle = null;
-
                     if (!noSchedule) {
+                        this.schedule = null;
+                        this.scheduleHandle = null;
+
                         return this.scheduleFlush();
                     }
 
-                    return true;
+                    if (logLevel === 'trace') {
+                        console.log('Removing Flush Schedule: noSchedule: ', noSchedule);
+                    }
+
+                    return this.removeFlushSchedule();
                 });
           });
     }
 
     shutdown() {
         // first flush, then shutdown the instance
-        return Promise.resolve(this.flush(true))
-          .then(() => this.instance.shutdown());
+        if (logLevel === 'trace') {
+            console.log('Shutting down: AggregatorCache');
+        }
+
+        return Promise.resolve(this.removeFlushSchedule())
+          .then(() => this.flush(true))
+          .then(() => this.instance.shutdown())
+          .then(() => {
+              console.log('Shut down: AggregatorCache');
+
+              return true;
+          });
     }
 }

@@ -5,8 +5,6 @@ import Promise from 'bluebird';
 import Request from 'request';
 import Chalk from 'chalk';
 
-import performanceNow from 'performance-now';
-
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
 
@@ -48,20 +46,31 @@ class IndexerInternal {
     }
 
     shutdown() {
+        if (logLevel === 'trace') {
+            console.log('Shutting down: Indexer');
+        }
+
         return Promise.resolve(this.aggregatorCache.shutdown())
-          .then(() => this.lock.shutdown());
+          .then(() => this.lock.shutdown())
+          .then(() => {
+              if (logLevel === 'trace') {
+                  console.log('Shut down: Indexer');
+              }
+
+              return true;
+          });
     }
 
-    static successResponse(response) {
+    static handleResponse(response, okStatusCodes) {
         if (!response) {
-            return false;
+            return Promise.reject('ERROR: No Response');
         }
 
         if (_.isArray(response)) {
             response = response[0];
         }
 
-        if (logLevel === 'debug' || (response.statusCode >= 300 && response.statusCode !== 404 && response.request.method !== 'HEAD')) {
+        if (logLevel === 'debug' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
@@ -78,7 +87,36 @@ class IndexerInternal {
             console.log();
         }
 
-        return response.statusCode < 300 ? response.body : null;
+        if (response.statusCode < 300) {
+            return Promise.resolve(response.body);
+        } else if (okStatusCodes && okStatusCodes[response.statusCode]) {
+            return Promise.resolve(null);
+        }
+
+        return Promise.reject(response.body);
+    }
+
+    static handleResponseArray(responses, okStatusCodes) {
+        const finalResponses = [];
+
+        let fail = false;
+        _.forEach(responses, response =>
+          Promise.resolve(IndexerInternal.handleResponse(response, okStatusCodes))
+            .then(result => {
+                console.log('Pushing success: ', result);
+                finalResponses.push(result);
+            })
+            .catch(error => {
+                console.log('Pushing error: ', error);
+                finalResponses.push(error);
+                fail = true;
+            }));
+
+        if (fail) {
+            return Promise.reject(finalResponses);
+        }
+
+        return Promise.resolve(finalResponses);
     }
 
     typeConfig(typeOrConfig) {
@@ -89,56 +127,75 @@ class IndexerInternal {
         return typeOrConfig;
     }
 
-    // TODO: support specific index deletion
-    deleteIndex() {
-        const promises = _(this.indicesConfig.indices)
-          .values()
-          .map((value) => this.request({method: 'DELETE', uri: `${value.store}`}))
-          .value();
+    deleteIndex(indexKey) {
+        if (!indexKey) {
+            const promises = _(this.indicesConfig.indices)
+              .values()
+              .map((indexConfig) => this.request({method: 'DELETE', uri: `${indexConfig.store}`}))
+              .value();
 
-        return Promise.all(promises)
-          .then(response => _.map(response, IndexerInternal.successResponse))
-          .then((response) => _.every(response, Boolean));
+            return Promise.all(promises)
+              .then(responses => IndexerInternal.handleResponseArray(responses));
+        }
+
+        const indexConfig = this.indicesConfig.indices[indexKey];
+
+        return this.request({method: 'DELETE', uri: `${indexConfig.store}`})
+          .then(IndexerInternal.handleResponse);
     }
 
-    // TODO: support specific index creation
-    createIndex() {
-        const promises = _(this.indicesConfig.indices)
+    createIndex(indexKey) {
+        if (!indexKey) {
+            const promises = _(this.indicesConfig.indices)
+              .values()
+              .map((indexConfig) => {
+                  const mappings = {};
+
+                  _(this.indicesConfig.types)
+                    .values()
+                    .filter(type => type.index === indexConfig.store)
+                    .forEach(type => {
+                        mappings[type.type] = type.mapping;
+                    });
+
+                  return this.request({
+                      method: 'PUT',
+                      uri: `${indexConfig.store}`,
+                      body: {settings: {analysis: indexConfig.analysis}, mappings}
+                  });
+              })
+              .value();
+
+            return Promise.all(promises)
+              .then(responses => IndexerInternal.handleResponseArray(responses));
+        }
+
+        const indexConfig = this.indicesConfig.indices[indexKey];
+
+        const mappings = {};
+
+        _(this.indicesConfig.types)
           .values()
-          .map((value) => {
-              const mappings = {};
+          .filter(type => type.index === indexConfig.store)
+          .forEach(type => {
+              mappings[type.type] = type.mapping;
+          });
 
-              _(this.indicesConfig.types)
-                .values()
-                .filter(type => type.index === value.store)
-                .forEach(type => {
-                    mappings[type.type] = type.mapping;
-                });
-
-              return this.request({
-                  method: 'PUT',
-                  uri: `${value.store}`,
-                  body: {settings: {analysis: value.analysis}, mappings}
-              });
-          })
-          .value();
-
-        return Promise.all(promises)
-          .then(response => _.map(response, IndexerInternal.successResponse))
-          .then((response) => _.every(response, Boolean));
+        return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {analysis: indexConfig.analysis}, mappings}})
+          .then(IndexerInternal.handleResponse);
     }
 
     exists(typeOrConfig, id) {
         const typeConfig = this.typeConfig(typeOrConfig);
         return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
-          .then(IndexerInternal.successResponse);
+          .then(response => IndexerInternal.handleResponse(response, {404: true}));
     }
 
     get(typeOrConfig, id) {
         const typeConfig = this.typeConfig(typeOrConfig);
         return this.request({method: 'GET', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
-          .then(IndexerInternal.successResponse)
-          .then((response) => response ? response._source : response);
+          .then(response => IndexerInternal.handleResponse(response, {404: true}))
+          .then((response) => (response || {})._source || null);
     }
 
     buildAggregates(typeOrConfig, newDoc, existingDoc) {
@@ -195,41 +252,29 @@ class IndexerInternal {
             const id = fieldValue.id;
             const data = fieldValue.data;
 
-            let lockHandle = null;
-
             const key = `${typeConfig.type}:${id}`;
 
-            const promise = this.lock.acquire(key)
-              .then(handle => {
-                  lockHandle = handle;
+            const operation = () =>
+              Promise.resolve(this.aggregatorCache.retrieve(key))
+                .then(cachedFieldDoc => {
+                    if (!cachedFieldDoc) {
+                        return this.get(typeConfig, id)
+                          .then(result => (result && {doc: result, opType, id, type: typeConfig.type} || null));
+                    }
 
-                  return this.aggregatorCache.retrieve(key);
-              })
-              .then(cachedFieldDoc => {
-                  if (!cachedFieldDoc) {
-                      return this.get(typeConfig, id)
-                        .then(result => (result && {doc: result, opType, id, type: typeConfig.type} || null));
-                  }
+                    return cachedFieldDoc;
+                })
+                .then(existingFieldDoc => {
+                    const aggregates = aggregateConfig.aggregateBuilder(
+                      existingFieldDoc && existingFieldDoc.doc,
+                      opType !== ADD_OP ? existingMeasures : null,
+                      opType === REMOVE_OP ? null : newMeasures);
+                    const newFieldDoc = _.extend(existingFieldDoc && existingFieldDoc.doc || {}, data, aggregates);
 
-                  return cachedFieldDoc;
-              })
-              .then(existingFieldDoc => {
-                  const aggregates = aggregateConfig.aggregateBuilder(existingFieldDoc && existingFieldDoc.doc, opType !== ADD_OP ? existingMeasures : null, opType === REMOVE_OP ? null : newMeasures);
-                  const newFieldDoc = _.extend(existingFieldDoc && existingFieldDoc.doc || {}, data, aggregates);
+                    return this.aggregatorCache.store(key, {doc: newFieldDoc, opType, id, type: typeConfig.type});
+                });
 
-                  //if (mode !== ADD) {
-                  //    return this.update(typeConfig, id, newFieldDoc, existingFieldDoc, lockHandle);
-                  //}
-                  //
-                  //return this.add(typeConfig, newFieldDoc, id, lockHandle);
-
-                  return this.aggregatorCache.store(key, {doc: newFieldDoc, opType, id, type: typeConfig.type});
-              })
-              .then((result) => {
-                  lockHandle.release();
-
-                  return result;
-              });
+            const promise = this.lock.usingLock(operation, key);
 
             promises.push(promise);
         };
@@ -285,46 +330,36 @@ class IndexerInternal {
     }
 
     flushAggregate(key) {
-        let lockHandle = null;
-
-        // take lock for the key
-        // make the op
-        // remove the entry
-        // release the lock
+        let finalResult = null;
 
         console.log(Chalk.yellow(`Flushing Key: ${key}`));
 
-        return this.lock.acquire(key)
-          .then(handle => {
-              lockHandle = handle;
+        const operation = (lockHandle) =>
+          Promise.resolve(this.aggregatorCache.retrieve(key))
+            .then(cachedAggregate => {
+                if (!cachedAggregate) {
+                    return null;
+                }
 
-              return this.aggregatorCache.retrieve(key);
-          })
-          .then(cachedAggregate => {
-              if (!cachedAggregate) {
-                  return null;
-              }
+                const {doc, opType, type, id} = cachedAggregate;
 
-              const {doc, opType, type, id} = cachedAggregate;
+                if (opType !== ADD_OP) {
+                    return this.update(type, id, doc, null, lockHandle);
+                }
 
-              if (opType !== ADD_OP) {
-                  return this.update(type, id, doc, null, lockHandle);
-              }
+                //console.log('Flushing: ', doc);
+                return this.add(type, doc, id, lockHandle);
+            })
+            .then((result) => {
+                finalResult = result;
+                if (result) {
+                    return this.aggregatorCache.remove(key);
+                }
 
-              //console.log('Flushing: ', doc);
-              return this.add(type, doc, id, lockHandle);
-          })
-          .then((result) => {
-              if (result) {
-                  this.aggregatorCache.remove(key);
-              }
+                return finalResult;
+            });
 
-              lockHandle.release();
-
-              console.log(Chalk.yellow(`Flushed Key: ${key}`));
-
-              return result;
-          });
+        return this.lock.usingLock(operation, key, null, timeTaken => console.log(Chalk.yellow(`Flushed Key: ${key} in ${timeTaken}ms`)));
     }
 
     add(typeOrConfig, doc, id, lockHandle) {
@@ -345,7 +380,7 @@ class IndexerInternal {
 
         const operation = () =>
           this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-            .then(IndexerInternal.successResponse)
+            .then(IndexerInternal.handleResponse)
             .then(response => {
                 result = response;
 
@@ -353,21 +388,7 @@ class IndexerInternal {
             })
             .then(() => result);
 
-        if (lockHandle) {
-            return operation();
-        }
-
-        return this.lock.acquire(`${typeOrConfig}:${id}`)
-          .then(handle => {
-              lockHandle = handle;
-
-              return operation();
-          })
-          .then((response) => {
-              lockHandle.release();
-
-              return response;
-          });
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
     remove(typeOrConfig, id, existingDoc, lockHandle) {
@@ -379,7 +400,7 @@ class IndexerInternal {
           Promise.resolve(existingDoc || this.get(typeOrConfig, id))
             .then(response => existingDoc = response)
             .then(() => this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`}))
-            .then(IndexerInternal.successResponse)
+            .then(IndexerInternal.handleResponse)
             .then(response => {
                 result = response;
 
@@ -387,21 +408,7 @@ class IndexerInternal {
             })
             .then(() => result);
 
-        if (lockHandle) {
-            return operation();
-        }
-
-        return this.lock.acquire(`${typeConfig.type}:${id}`)
-          .then(handle => {
-              lockHandle = handle;
-
-              return operation();
-          })
-          .then((response) => {
-              lockHandle.release();
-
-              return response;
-          });
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.red(`Removed ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
     update(typeOrConfig, id, newDoc, existingDoc, lockHandle) {
@@ -411,18 +418,20 @@ class IndexerInternal {
             transform(newDoc);
         }
 
+        id = id || typeConfig.id(newDoc);
+
         let result = null;
 
         const filter = typeConfig.filter;
         if (filter && _.isFunction(filter) && !filter(newDoc)) {
-            return this.remove(typeOrConfig, id, existingDoc);
+            return this.remove(typeOrConfig, id, existingDoc, lockHandle);
         }
 
         const operation = () =>
           Promise.resolve(existingDoc || this.get(typeOrConfig, id))
             .then(response => existingDoc = response)
             .then(() => this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}}))
-            .then(IndexerInternal.successResponse)
+            .then(IndexerInternal.handleResponse)
             .then(response => {
                 result = response;
 
@@ -430,26 +439,10 @@ class IndexerInternal {
             })
             .then(() => result);
 
-        if (lockHandle) {
-            return operation();
-        }
-
-        return this.lock.acquire(`${typeConfig.type}:${id}`)
-          .then(handle => {
-              lockHandle = handle;
-
-              return operation();
-          })
-          .then((response) => {
-              lockHandle.release();
-
-              return response;
-          });
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
     upsert(typeOrConfig, doc) {
-        let lockHandle = null;
-
         const typeConfig = this.typeConfig(typeOrConfig);
 
         const mode = typeConfig.mode;
@@ -458,64 +451,32 @@ class IndexerInternal {
 
         const key = `${typeConfig.type}:${id}`;
 
+        let operation = null;
+
         // for now upsert operation is the only supported for aggregate mode
         if (mode && mode === AGGREGATE_MODE) {
-            let startTime = null;
-            if (logLevel === 'trace') {
-                startTime = performanceNow();
-            }
+            operation = () =>
+              Promise.resolve(this.aggregatorCache.retrieve(key))
+                .then(cachedDoc => {
+                    if (!cachedDoc) {
+                        return this.get(typeConfig, id)
+                          .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: typeConfig.type} || null));
+                    }
 
-            return this.lock.acquire(key)
-              .then(handle => {
-                  lockHandle = handle;
+                    return cachedDoc;
+                })
+                .then(existingDoc => {
+                    const newDoc = typeConfig.aggregateBuilder(existingDoc && existingDoc.doc, doc);
 
-                  return this.aggregatorCache.retrieve(key);
-              })
-              .then(cachedDoc => {
-                  if (!cachedDoc) {
-                      return this.get(typeConfig, id)
-                        .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: typeConfig.type} || null));
-                  }
-
-                  return cachedDoc;
-              })
-              .then(existingDoc => {
-                  const newDoc = typeConfig.aggregateBuilder(existingDoc && existingDoc.doc, doc);
-
-                  //if (mode !== ADD) {
-                  //    return this.update(typeConfig, id, newFieldDoc, existingFieldDoc, lockHandle);
-                  //}
-                  //
-                  //return this.add(typeConfig, newFieldDoc, id, lockHandle);
-
-                  return this.aggregatorCache.store(key, {doc: newDoc, opType: existingDoc && existingDoc.opType || ADD_OP, id, type: typeConfig.type});
-              })
-              .then((result) => {
-                  lockHandle.release();
-
-                  if (logLevel === 'trace') {
-                      console.log('Upserted doc: ', id, (performanceNow() - startTime).toFixed(3));
-                  }
-
-                  return result;
-              });
+                    return this.aggregatorCache.store(key, {doc: newDoc, opType: existingDoc && existingDoc.opType || ADD_OP, id, type: typeConfig.type});
+                });
+        } else {
+            operation = (lockHandle) =>
+              Promise.resolve(this.get(typeOrConfig, id))
+                .then((existingDoc) => existingDoc ? this.update(typeOrConfig, id, doc, existingDoc, lockHandle) : this.add(typeOrConfig, doc, id, lockHandle));
         }
 
-        return this.lock.acquire(key)
-          .then(handle => {
-              lockHandle = handle;
-
-              return this.get(typeOrConfig, id);
-          })
-          .then((existingDoc) =>
-            existingDoc
-              ? this.update(typeOrConfig, id, doc, existingDoc, lockHandle)
-              : this.add(typeOrConfig, doc, id, lockHandle))
-          .then((result) => {
-              lockHandle.release();
-
-              return result;
-          });
+        return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 }
 
@@ -543,12 +504,12 @@ export default class Indexer {
         return this.internal.add(request.type, request.doc);
     }
 
-    createIndex() {
-        return this.internal.createIndex();
+    createIndex(indexKey) {
+        return this.internal.createIndex(indexKey);
     }
 
-    deleteIndex() {
-        return this.internal.deleteIndex();
+    deleteIndex(indexKey) {
+        return this.internal.deleteIndex(indexKey);
     }
 
     shutdown() {
@@ -561,8 +522,6 @@ export default class Indexer {
             update: {handler: this.update},
             remove: {handler: this.remove},
             add: {handler: this.add},
-            createIndex: {handler: this.createIndex},
-            deleteIndex: {handler: this.deleteIndex},
             ':type': [
                 {handler: this.upsert},
                 {handler: this.add, method: 'put'}
