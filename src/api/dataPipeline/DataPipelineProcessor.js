@@ -1,7 +1,10 @@
 import _ from 'lodash';
 import Promise from 'bluebird';
+import {EventEmitter} from 'events';
 
 import performanceNow from 'performance-now';
+
+import watchFile from './FileWatcher';
 
 import * as GuardedPromise from './GuardedPromise';
 
@@ -36,15 +39,47 @@ const Settings = {
     }
 };
 
+const PROCESS_NEXT_EVENT = 'processNext';
+
 export default class DataPipelineProcessor {
     constructor(config) {
         // TODO: validate config schema with Joi
         this.config = config;
+        this.watchQueue = [];
+        this.running = false;
+        this.eventEmitter = new EventEmitter();
+    }
+
+    watch(params) {
+        this.eventEmitter.addListener(PROCESS_NEXT_EVENT, () => this.processWatchQueue());
+
+        watchFile({
+            filePattern: params.filePattern,
+            process: path => {
+                this.watchQueue.push({indexer: params.indexer, file: path, watch: true});
+                this.eventEmitter.emit(PROCESS_NEXT_EVENT);
+            }
+        });
+    }
+
+    processWatchQueue() {
+        if (this.running) return;
+
+        this.running = true;
+
+        const params = this.watchQueue.shift();
+        if (params) {
+            this.process(params);
+        } else {
+            this.running = false;
+        }
     }
 
     process(params) {
         const sourceHandler = Settings.source[this.config.input.source.type];
         const formatHandler = Settings.format[this.config.input.format.type];
+
+        console.log('Started processing: ', params.file);
 
         let stream = sourceHandler(this.config.input.source, params);
 
@@ -62,13 +97,13 @@ export default class DataPipelineProcessor {
         const outputHandler = new (Settings.output[this.config.output.type])(this.config.output, params);
 
         stream.on('data', GuardedPromise.guard(this.config.output.concurrency || 1, (data) => {
-            queuedCount++;
+            const numIndex = queuedCount++;
 
             const startTime = performanceNow();
 
-            return Promise.resolve(outputHandler.handle(data))
+            return Promise.resolve(outputHandler.handle(data, this.config.filter))
               .then((result) => {
-                  console.log(`Processed #${processedCount}: ${result} in ${(performanceNow() - startTime).toFixed(3)} ms`);
+                  console.log(`Processed #${numIndex}: ${result && (result._id || result.id)} in ${(performanceNow() - startTime).toFixed(3)} ms`);
 
                   return result;
               })
@@ -76,10 +111,18 @@ export default class DataPipelineProcessor {
               .finally(() => processedCount++);
         }));
 
+        const _this = this;
+
         stream.on('end', () => {
             function shutdownIndexerIfProcessed() {
                 if (queuedCount === processedCount) {
-                    outputHandler.shutdown();
+                    if (!params.watch) {
+                        outputHandler.shutdown();
+                    } else {
+                        console.log('Completed processing: ', params.file);
+                        _this.running = false;
+                        _this.eventEmitter.emit(PROCESS_NEXT_EVENT);
+                    }
                 } else {
                     // schedule next one
                     _.delay(shutdownIndexerIfProcessed, 5000);

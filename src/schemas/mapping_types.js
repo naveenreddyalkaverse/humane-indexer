@@ -23,8 +23,20 @@ export const $Double = {
     type: 'double'
 };
 
+export const $NotIndexedDouble = {
+    type: 'double',
+    index: 'no',
+    include_in_all: false
+};
+
 export const $Boolean = {
     type: 'boolean'
+};
+
+export const $NotIndexedBoolean = {
+    type: 'boolean',
+    index: 'no',
+    include_in_all: false
 };
 
 export const $Date = {
@@ -96,59 +108,12 @@ export const $VernacularText = {
     type: 'string',
     analyzer: 'standard_index_analyzer',
     search_analyzer: 'standard_search_analyzer',
-    include_in_all: false
+    fields: {
+        raw: $Keyword,
+        edgeGram: {
+            type: 'string',
+            analyzer: 'edgeGram_index_analyzer',
+            search_analyzer: 'standard_search_analyzer'
+        }
+    }
 };
-
-//export const $AutocompletableText = {
-//    type: 'string',
-//    analyzer: 'standard_index_analyzer',
-//    search_analyzer: 'standard_search_analyzer',
-//    fields: {
-//        raw: $Keyword,
-//        edgeGram: {
-//            type: 'string',
-//            analyzer: 'edgeGram_index_analyzer',
-//            search_analyzer: 'standard_search_analyzer'
-//        },
-//        nGram: {
-//            type: 'string',
-//            analyzer: 'nGram_index_analyzer',
-//            search_analyzer: 'standard_search_analyzer'
-//        },
-//        phonetic_bm: {
-//            type: 'string',
-//            analyzer: 'phonetic_bm_index_analyzer',
-//            search_analyzer: 'phonetic_bm_search_analyzer'
-//        },
-//        phonetic_edgeGram_bm: {
-//            type: 'string',
-//            analyzer: 'phonetic_edgeGram_bm_index_analyzer',
-//            search_analyzer: 'phonetic_bm_search_analyzer'
-//        },
-//        phonetic_soundex: {
-//            type: 'string',
-//            analyzer: 'phonetic_soundex_index_analyzer',
-//            search_analyzer: 'phonetic_soundex_search_analyzer'
-//        },
-//        phonetic_edgeGram_soundex: {
-//            type: 'string',
-//            analyzer: 'phonetic_edgeGram_soundex_index_analyzer',
-//            search_analyzer: 'phonetic_soundex_search_analyzer'
-//        },
-//        phonetic_dm: {
-//            type: 'string',
-//            analyzer: 'phonetic_dm_index_analyzer',
-//            search_analyzer: 'phonetic_dm_search_analyzer'
-//        },
-//        phonetic_edgeGram_dm: {
-//            type: 'string',
-//            analyzer: 'phonetic_edgeGram_dm_index_analyzer',
-//            search_analyzer: 'phonetic_dm_search_analyzer'
-//        },
-//        autocomplete_edgeGram: {
-//            type: 'string',
-//            analyzer: 'autocomplete_index_analyzer',
-//            search_analyzer: 'autocomplete_search_analyzer'
-//        }
-//    }
-//};

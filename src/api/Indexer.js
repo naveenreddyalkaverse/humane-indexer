@@ -90,10 +90,10 @@ class IndexerInternal {
         if (response.statusCode < 300) {
             return Promise.resolve(response.body);
         } else if (okStatusCodes && okStatusCodes[response.statusCode]) {
-            return Promise.resolve(null);
+            return Promise.resolve({status: response.statusCode, body: response.body});
         }
 
-        return Promise.reject(response.body);
+        return Promise.reject({status: response.statusCode, body: response.body});
     }
 
     static handleResponseArray(responses, okStatusCodes) {
@@ -182,52 +182,57 @@ class IndexerInternal {
           });
 
         return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {analysis: indexConfig.analysis}, mappings}})
-          .then(IndexerInternal.handleResponse);
-    }
-
-    exists(typeOrConfig, id) {
-        const typeConfig = this.typeConfig(typeOrConfig);
-        return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
           .then(response => IndexerInternal.handleResponse(response, {404: true}));
     }
 
-    get(typeOrConfig, id) {
-        const typeConfig = this.typeConfig(typeOrConfig);
-        return this.request({method: 'GET', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
+    exists(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+        return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
+          .then(response => IndexerInternal.handleResponse(response, {404: true}));
+    }
+
+    get(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+        return this.request({method: 'GET', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
           .then(response => IndexerInternal.handleResponse(response, {404: true}))
           .then((response) => (response || {})._source || null);
     }
 
-    buildAggregates(typeOrConfig, newDoc, existingDoc) {
-        const aggregatorsConfig = this.indicesConfig.aggregators[_.isString(typeOrConfig) ? typeOrConfig : typeOrConfig.type];
+    buildAggregates(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+        const newDoc = request.newDoc;
+        const existingDoc = request.existingDoc;
+        const partial = request.partial || false;
+
+        const aggregatorsConfig = this.indicesConfig.aggregators[typeConfig.type];
         if (!aggregatorsConfig) {
             return false;
         }
 
-        let newMeasures = null;
-        if (newDoc) {
-            newMeasures = {};
-            _(aggregatorsConfig.measures).forEach(measure => newMeasures[measure] = newDoc[measure]);
-        }
-
-        let existingMeasures = null;
-        if (existingDoc) {
-            existingMeasures = {};
-            _(aggregatorsConfig.measures).forEach(measure => existingMeasures[measure] = existingDoc[measure]);
-        }
+        //let newMeasures = null;
+        //if (newDoc) {
+        //    newMeasures = {};
+        //    _(aggregatorsConfig.measures).forEach(measure => newMeasures[measure] = newDoc[measure]);
+        //}
+        //
+        //let existingMeasures = null;
+        //if (existingDoc) {
+        //    existingMeasures = {};
+        //    _(aggregatorsConfig.measures).forEach(measure => existingMeasures[measure] = existingDoc[measure]);
+        //}
 
         const promises = [];
 
-        const getFieldValues = (aggregateConfig, typeConfig, doc) => {
-            const fieldValues = [];
+        const buildAggregates = (aggregateConfig, doc) => {
+            const aggregates = [];
 
             if (!doc) {
-                return fieldValues;
+                return aggregates;
             }
 
             let docField = doc[aggregateConfig.field];
             if (!docField) {
-                return fieldValues;
+                return aggregates;
             }
 
             if (!_.isArray(docField)) {
@@ -239,39 +244,142 @@ class IndexerInternal {
                     return true;
                 }
 
-                const data = aggregateConfig.dataBuilder(doc, fieldValue);
-                const id = this.typeConfig(typeConfig).id(data);
-                fieldValues.push({id, data});
+                const aggregate = aggregateConfig.aggregateBuilder(doc, fieldValue);
+                const id = _.isFunction(aggregateConfig.indexType.id) && aggregateConfig.indexType.id(aggregate) || aggregate.id;
+
+                if (id && aggregate) {
+                    aggregates.push({id, aggregate});
+                }
+
                 return true;
             });
 
-            return fieldValues;
+            return aggregates;
         };
 
-        const buildFieldValueAggregate = (fieldValue, aggregateConfig, typeConfig, opType) => {
-            const id = fieldValue.id;
-            const data = fieldValue.data;
+        const buildMeasures = (aggregateData, aggregateConfig, opType) => {
+            const id = aggregateData.id;
+            const aggregate = aggregateData.aggregate;
 
-            const key = `${typeConfig.type}:${id}`;
+            const aggregateIndexConfig = aggregateConfig.indexType;
+            const aggregateIndexType = aggregateIndexConfig.type;
+
+            const key = `${aggregateIndexType}:${id}`;
 
             const operation = () =>
               Promise.resolve(this.aggregatorCache.retrieve(key))
-                .then(cachedFieldDoc => {
-                    if (!cachedFieldDoc) {
-                        return this.get(typeConfig, id)
-                          .then(result => (result && {doc: result, opType, id, type: typeConfig.type} || null));
+                .then(cachedAggregateData => {
+                    if (!cachedAggregateData) {
+                        return this.get({typeConfig: aggregateIndexConfig, id})
+                          .then(result => (result && {doc: result, opType, id, type: aggregateIndexType} || null));
                     }
 
-                    return cachedFieldDoc;
+                    return cachedAggregateData;
                 })
-                .then(existingFieldDoc => {
-                    const aggregates = aggregateConfig.aggregateBuilder(
-                      existingFieldDoc && existingFieldDoc.doc,
-                      opType !== ADD_OP ? existingMeasures : null,
-                      opType === REMOVE_OP ? null : newMeasures);
-                    const newFieldDoc = _.extend(existingFieldDoc && existingFieldDoc.doc || {}, data, aggregates);
+                .then(existingAggregateData => {
+                    if (!existingAggregateData) {
+                        if (opType === UPDATE_OP) {
+                            opType = ADD_OP;
+                        } else if (opType === REMOVE_OP) {
+                            // if it does not exist what to remove ?
+                            return true;
+                        }
+                    }
 
-                    return this.aggregatorCache.store(key, {doc: newFieldDoc, opType, id, type: typeConfig.type});
+                    const measuresConfig = aggregateConfig.measures || aggregatorsConfig.measures;
+
+                    let existingAggregateDoc = {};
+                    let newAggregateDoc = {};
+
+                    // aggregate already exist
+                    if (existingAggregateData && existingAggregateData.doc) {
+                        existingAggregateDoc = existingAggregateData.doc;
+                        newAggregateDoc = _.extend(newAggregateDoc, existingAggregateDoc, aggregate);
+                    } else {
+                        newAggregateDoc = _.extend(newAggregateDoc, aggregate);
+                    }
+
+                    _.forEach(measuresConfig, measureConfig => {
+                        let measureType = null;
+                        let measureName = null;
+                        let measureFunction = null;
+                        let measureTypeConfig = null;
+
+                        if (_.isString(measureConfig)) {
+                            measureName = measureConfig;
+                            measureType = 'SUM';
+                        } else if (_.isObject(measureConfig)) {
+                            const config = _.first(_.toPairs(measureConfig));
+                            measureName = config[0];
+                            if (_.isString(config[1])) {
+                                measureType = config[1];
+                            } else if (_.isFunction(config[1])) {
+                                measureType = 'FUNCTION';
+                                measureFunction = config[1];
+                            } else if (_.isObject(config[1])) {
+                                measureType = config[1].type;
+                                measureTypeConfig = config[1];
+                            }
+                        }
+
+                        if (partial && _.isUndefined(newDoc[measureName])) {
+                            // we skip if new doc does not have value in case of partial update
+                            return true;
+                        }
+
+                        let value = _.get(existingAggregateDoc, measureName, 0);
+
+                        if (measureType === 'COUNT') {
+                            if (opType === ADD_OP) {
+                                // simply SUM the values here
+                                value += 1;
+                            } else if (opType === REMOVE_OP) {
+                                // simply REDUCE the values here
+                                value -= 1;
+                            }
+                        } else if (measureType === 'SUM') {
+                            if (opType === ADD_OP) {
+                                value += _.get(newDoc, measureName, 0);
+                            } else if (opType === UPDATE_OP) {
+                                value += (_.get(newDoc, measureName, 0) - _.get(existingDoc, measureName, 0));
+                            } else if (opType === REMOVE_OP) {
+                                // simply REDUCE the values here
+                                value -= _.get(existingDoc, measureName, 0);
+                            }
+                        } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
+                            let totalCount = 0;
+                            let totalValue = 0;
+
+                            const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
+
+                            value = value * _.get(existingAggregateDoc, measureTypeConfig.count, 0);
+                            if (opType === ADD_OP) {
+                                totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(newDoc, countField, 0);
+                                totalValue = value + _.get(newDoc, measureName, 0) * _.get(newDoc, countField, 0);
+                            } else if (opType === UPDATE_OP) {
+                                totalCount = _.get(existingAggregateDoc, countField, 0) - _.get(existingDoc, countField, 0) + _.get(newDoc, countField, 0);
+                                totalValue = value - _.get(existingDoc, measureName, 0) * _.get(existingDoc, countField, 0) + _.get(newDoc, measureName, 0) * _.get(newDoc, countField, 0);
+                            } else if (opType === REMOVE_OP) {
+                                totalCount = _.get(existingAggregateDoc, countField, 0) - _.get(existingDoc, countField, 0);
+                                totalValue = value - _.get(existingDoc, measureName, 0) * _.get(existingDoc, countField, 0);
+                            }
+
+                            value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
+                        } else if (measureType === 'FUNCTION') {
+                            value = measureFunction(newAggregateDoc, opType);
+
+                            const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
+                            if (modifier) {
+                                value = _.invoke(Math, 'log1p', value);
+                            }
+
+                            value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
+                        }
+
+                        newAggregateDoc[measureName] = value;
+                    });
+
+                    return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: aggregateIndexType});
                 });
 
             const promise = this.lock.usingLock(operation, key);
@@ -282,48 +390,46 @@ class IndexerInternal {
         _(aggregatorsConfig.aggregates)
           .values()
           .forEach((aggregateConfig) => {
-              const typeConfig = aggregateConfig.indexType;
+              const newDocAggregates = buildAggregates(aggregateConfig, newDoc);
+              const existingDocAggregates = buildAggregates(aggregateConfig, existingDoc);
 
-              const newDocFieldValues = getFieldValues(aggregateConfig, typeConfig, newDoc);
-              const existingDocFieldValues = getFieldValues(aggregateConfig, typeConfig, existingDoc);
+              const aggregatesToAdd = []; // if in newDoc, but not in existingDoc
+              const aggregatesToRemove = []; // if not in newDoc, but in existingDoc
+              const aggregatesToUpdate = []; // if in both newDoc and existingDoc
 
-              const fieldValuesToAdd = []; // if in newDoc, but not in existingDoc
-              const fieldValuesToRemove = []; // if not in newDoc, but in existingDoc
-              const fieldValuesToUpdate = []; // if in both newDoc and existingDoc
-
-              _.forEach(newDocFieldValues, newDocFieldValue => {
+              _.forEach(newDocAggregates, newDocAggregate => {
                   let found = false;
-                  _.forEach(existingDocFieldValues, existingDocFieldValue => {
-                      if (newDocFieldValue.id === existingDocFieldValue.id) {
+                  _.forEach(existingDocAggregates, existingDocAggregate => {
+                      if (newDocAggregate.id === existingDocAggregate.id) {
                           found = true;
                           return false;
                       }
                   });
 
                   if (found) {
-                      fieldValuesToUpdate.push(newDocFieldValue);
+                      aggregatesToUpdate.push(newDocAggregate);
                   } else {
-                      fieldValuesToAdd.push(newDocFieldValue);
+                      aggregatesToAdd.push(newDocAggregate);
                   }
               });
 
-              _.forEach(existingDocFieldValues, existingDocFieldValue => {
+              _.forEach(existingDocAggregates, existingDocAggregate => {
                   let found = false;
-                  _.forEach(newDocFieldValues, newDocFieldValue => {
-                      if (newDocFieldValue.id === existingDocFieldValue.id) {
+                  _.forEach(newDocAggregates, newDocAggregate => {
+                      if (newDocAggregate.id === existingDocAggregate.id) {
                           found = true;
                           return false;
                       }
                   });
 
-                  if (!found) {
-                      fieldValuesToRemove.push(existingDocFieldValue);
+                  if (!found && !partial) {
+                      aggregatesToRemove.push(existingDocAggregate);
                   }
               });
 
-              _.forEach(fieldValuesToAdd, fieldValue => buildFieldValueAggregate(fieldValue, aggregateConfig, typeConfig, ADD_OP));
-              _.forEach(fieldValuesToRemove, fieldValue => buildFieldValueAggregate(fieldValue, aggregateConfig, typeConfig, REMOVE_OP));
-              _.forEach(fieldValuesToUpdate, fieldValue => buildFieldValueAggregate(fieldValue, aggregateConfig, typeConfig, UPDATE_OP));
+              _.forEach(aggregatesToAdd, aggregateData => buildMeasures(aggregateData, aggregateConfig, ADD_OP));
+              _.forEach(aggregatesToRemove, aggregateData => buildMeasures(aggregateData, aggregateConfig, REMOVE_OP));
+              _.forEach(aggregatesToUpdate, aggregateData => buildMeasures(aggregateData, aggregateConfig, UPDATE_OP));
           });
 
         return Promise.all(promises).then((responses) => _.every(responses, response => !!response));
@@ -341,14 +447,14 @@ class IndexerInternal {
                     return null;
                 }
 
-                const {doc, opType, type, id} = cachedAggregate;
+                const {doc, type, id} = cachedAggregate;
 
-                if (opType !== ADD_OP) {
-                    return this.update(type, id, doc, null, lockHandle);
+                if (cachedAggregate.opType !== ADD_OP) {
+                    return this.update({type, id, doc, lockHandle});
                 }
 
                 //console.log('Flushing: ', doc);
-                return this.add(type, doc, id, lockHandle);
+                return this.add({type, doc, id, lockHandle});
             })
             .then((result) => {
                 finalResult = result;
@@ -362,88 +468,119 @@ class IndexerInternal {
         return this.lock.usingLock(operation, key, null, timeTaken => console.log(Chalk.yellow(`Flushed Key: ${key} in ${timeTaken}ms`)));
     }
 
-    add(typeOrConfig, doc, id, lockHandle) {
-        const typeConfig = this.typeConfig(typeOrConfig);
+    add(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
+
+        const doc = request.doc;
         if (transform && _.isFunction(transform)) {
             transform(doc);
         }
 
-        id = id || typeConfig.id(doc);
-
-        let result = null;
-
-        const filter = typeConfig.filter;
-        if (filter && _.isFunction(filter) && !filter(doc)) {
+        if (request.filter && _.isFunction(request.filter) && !request.filter(doc)) {
             return false;
         }
 
-        const operation = () =>
-          this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-            .then(IndexerInternal.handleResponse)
-            .then(response => {
-                result = response;
+        if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(doc)) {
+            return false;
+        }
 
-                return this.buildAggregates(typeOrConfig, doc);
-            })
-            .then(() => result);
-
-        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
-    }
-
-    remove(typeOrConfig, id, existingDoc, lockHandle) {
-        const typeConfig = this.typeConfig(typeOrConfig);
+        const id = request.id || typeConfig.id(doc);
 
         let result = null;
 
         const operation = () =>
-          Promise.resolve(existingDoc || this.get(typeOrConfig, id))
-            .then(response => existingDoc = response)
-            .then(() => this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`}))
-            .then(IndexerInternal.handleResponse)
+          this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
+            .then(response => IndexerInternal.handleResponse(response, {404: true}))
             .then(response => {
                 result = response;
 
-                return this.buildAggregates(typeOrConfig, null, existingDoc);
+                return this.buildAggregates({typeConfig, newDoc: doc});
             })
             .then(() => result);
 
-        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.red(`Removed ${typeConfig.type} #${id} in ${timeTaken}ms`)));
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
-    update(typeOrConfig, id, newDoc, existingDoc, lockHandle) {
-        const typeConfig = this.typeConfig(typeOrConfig);
+    remove(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+
+        const id = request.id;
+        let existingDoc = request.doc;
+
+        let result = null;
+
+        const operation = () =>
+          Promise.resolve(existingDoc || this.get({typeConfig, id}))
+            .then(response => existingDoc = response)
+            .then(() => this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`}))
+            .then(response => IndexerInternal.handleResponse(response, {404: true}))
+            .then(response => {
+                result = response;
+
+                return this.buildAggregates({typeConfig, existingDoc, partial: request.partial});
+            })
+            .then(() => result);
+
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.red(`Removed ${typeConfig.type} #${id} in ${timeTaken}ms`)));
+    }
+
+    update(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
+
+        const newDoc = request.doc;
+        let existingDoc = request.existingDoc;
         if (transform && _.isFunction(transform)) {
             transform(newDoc);
         }
 
-        id = id || typeConfig.id(newDoc);
+        const id = request.id || typeConfig.id(newDoc);
 
         let result = null;
 
-        const filter = typeConfig.filter;
-        if (filter && _.isFunction(filter) && !filter(newDoc)) {
-            return this.remove(typeOrConfig, id, existingDoc, lockHandle);
-        }
-
         const operation = () =>
-          Promise.resolve(existingDoc || this.get(typeOrConfig, id))
+          Promise.resolve(existingDoc || this.get({typeConfig, id}))
             .then(response => existingDoc = response)
-            .then(() => this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}}))
-            .then(IndexerInternal.handleResponse)
-            .then(response => {
-                result = response;
+            .then(() => {
+                if (!existingDoc) {
+                    return false;
+                }
 
-                return this.buildAggregates(typeOrConfig, newDoc, existingDoc);
-            })
-            .then(() => result);
+                if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc)) {
+                    // if it is filtered by type then remove
+                    if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
+                        return this.remove({typeConfig, id, doc: existingDoc, lockHandle: request.lockHandle, partial: request.partial});
+                    }
 
-        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
+                    // more of a partial update
+                    return false;
+                }
+
+                if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
+                    return this.remove({typeConfig, id, doc: existingDoc, lockHandle: request.lockHandle, partial: request.partial});
+                }
+
+                return this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}})
+                  .then(response => IndexerInternal.handleResponse(response, {404: true}))
+                  .then(response => {
+                      result = response;
+
+                      return this.buildAggregates({typeConfig, newDoc, existingDoc, partial: request.partial});
+                  })
+                  .then(() => result);
+            });
+
+        return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
-    upsert(typeOrConfig, doc) {
-        const typeConfig = this.typeConfig(typeOrConfig);
+    partialUpdate(request) {
+        return this.update(_.extend(request, {partial: true}));
+    }
+
+    upsert(request) {
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+        const doc = request.doc;
 
         const mode = typeConfig.mode;
 
@@ -457,23 +594,93 @@ class IndexerInternal {
         if (mode && mode === AGGREGATE_MODE) {
             operation = () =>
               Promise.resolve(this.aggregatorCache.retrieve(key))
-                .then(cachedDoc => {
-                    if (!cachedDoc) {
-                        return this.get(typeConfig, id)
+                .then(cachedAggregateData => {
+                    if (!cachedAggregateData) {
+                        return this.get({typeConfig, id})
                           .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: typeConfig.type} || null));
                     }
 
-                    return cachedDoc;
+                    return cachedAggregateData;
                 })
-                .then(existingDoc => {
-                    const newDoc = typeConfig.aggregateBuilder(existingDoc && existingDoc.doc, doc);
+                .then(existingAggregateData => {
+                    const opType = existingAggregateData && existingAggregateData.opType || ADD_OP;
 
-                    return this.aggregatorCache.store(key, {doc: newDoc, opType: existingDoc && existingDoc.opType || ADD_OP, id, type: typeConfig.type});
+                    const aggregateDoc = typeConfig.aggregateBuilder(existingAggregateData && existingAggregateData.doc, doc);
+
+                    const measuresConfig = typeConfig.measures;
+
+                    let existingAggregateDoc = {};
+                    let newAggregateDoc = {};
+
+                    // aggregate already exist
+                    if (existingAggregateData && existingAggregateData.doc) {
+                        existingAggregateDoc = existingAggregateData.doc;
+                        newAggregateDoc = _.extend(newAggregateDoc, existingAggregateDoc, aggregateDoc);
+                    } else {
+                        newAggregateDoc = _.extend(newAggregateDoc, aggregateDoc);
+                    }
+
+                    _.forEach(measuresConfig, measureConfig => {
+                        let measureType = null;
+                        let measureName = null;
+                        let measureFunction = null;
+                        let measureTypeConfig = null;
+
+                        if (_.isString(measureConfig)) {
+                            measureName = measureConfig;
+                            measureType = 'SUM';
+                        } else if (_.isObject(measureConfig)) {
+                            const config = _.first(_.toPairs(measureConfig));
+                            measureName = config[0];
+                            if (_.isString(config[1])) {
+                                measureType = config[1];
+                            } else if (_.isFunction(config[1])) {
+                                measureType = 'FUNCTION';
+                                measureFunction = config[1];
+                            } else if (_.isObject(config[1])) {
+                                measureType = config[1].type;
+                                measureTypeConfig = config[1];
+                            }
+                        }
+
+                        if (request.partial && _.isUndefined(doc[measureName])) {
+                            // we skip if new doc does not have value in case of partial update
+                            return true;
+                        }
+
+                        let value = _.get(existingAggregateDoc, measureName, 0);
+
+                        if (measureType === 'COUNT') {
+                            value += 1;
+                        } else if (measureType === 'SUM') {
+                            value += _.get(doc, measureName, 0);
+                        } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
+                            const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
+
+                            const totalValue = value * _.get(existingAggregateDoc, countField, 0) + _.get(doc, measureName, 0) * _.get(doc, countField, 0);
+                            const totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(doc, countField, 0);
+
+                            value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
+                        } else if (measureType === 'FUNCTION') {
+                            value = measureFunction(newAggregateDoc, opType);
+
+                            const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
+                            if (modifier) {
+                                value = _.invoke(Math, 'log1p', value);
+                            }
+
+                            value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
+                        }
+
+                        newAggregateDoc[measureName] = value;
+                    });
+
+                    return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: typeConfig.type});
                 });
         } else {
             operation = (lockHandle) =>
-              Promise.resolve(this.get(typeOrConfig, id))
-                .then((existingDoc) => existingDoc ? this.update(typeOrConfig, id, doc, existingDoc, lockHandle) : this.add(typeOrConfig, doc, id, lockHandle));
+              Promise.resolve(this.get({typeConfig, id}))
+                .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, id, lockHandle}));
         }
 
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
@@ -489,19 +696,23 @@ export default class Indexer {
     }
 
     upsert(headers, request) {
-        return this.internal.upsert(request.type, request.doc);
+        return this.internal.upsert(request);
     }
 
     update(headers, request) {
-        return this.internal.update(request.type, request.id, request.doc);
+        return this.internal.update(request);
+    }
+
+    partialUpdate(headers, request) {
+        return this.internal.partialUpdate(request);
     }
 
     remove(headers, request) {
-        return this.internal.remove(request.type, request.id);
+        return this.internal.remove(request);
     }
 
     add(headers, request) {
-        return this.internal.add(request.type, request.doc);
+        return this.internal.add(request);
     }
 
     createIndex(indexKey) {
@@ -520,6 +731,7 @@ export default class Indexer {
         return {
             upsert: {handler: this.upsert},
             update: {handler: this.update},
+            partialUpdate: {handler: this.partialUpdate},
             remove: {handler: this.remove},
             add: {handler: this.add},
             ':type': [

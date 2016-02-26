@@ -9,8 +9,8 @@ export default class IndexerOutput {
         this.indexType = config.indexType;
     }
 
-    handle(doc) {
-        return this.handler.call(this.indexer, null, {type: this.indexType, doc});
+    handle(doc, filter) {
+        return this.handler.call(this.indexer, null, {type: this.indexType, doc, filter});
     }
 
     shutdown() {

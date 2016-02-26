@@ -83,8 +83,17 @@ class LocalCache {
 export default class Cache {
     constructor(indexer, lock) {
         let mode = 'local';
-        if (Config.has('CACHE') && Config.get('CACHE').type === 'redis') {
-            mode = 'redis';
+        if (Config.has('CACHE')) {
+            const cacheConfig = Config.get('CACHE');
+            if (cacheConfig.type === 'redis') {
+                mode = 'redis';
+            }
+
+            if (cacheConfig.flushTimeout) {
+                this.flushTimeout = cacheConfig.flushTimeout;
+            }
+        } else {
+            this.flushTimeout = 10000;
         }
 
         if (mode === 'redis') {
@@ -157,7 +166,7 @@ export default class Cache {
 
         const operation = () => {
             if (!this.schedule) {
-                this.scheduleHandle = _.delay(this.flush.bind(this), 10000);
+                this.scheduleHandle = _.delay(this.flush.bind(this), this.flushTimeout);
                 this.schedule = true;
 
                 console.log(Chalk.yellow(`Scheduled Flush: ${this.scheduleHandle}`));

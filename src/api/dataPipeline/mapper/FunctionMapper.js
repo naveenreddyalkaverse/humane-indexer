@@ -1,4 +1,4 @@
-export default class FunctionMapper extends require('stream').Transform {
+class FunctionMapper extends require('stream').Transform {
     constructor(config) {
         super({objectMode: true});
         this.mapper = config.fn;
@@ -9,4 +9,8 @@ export default class FunctionMapper extends require('stream').Transform {
 
         done();
     }
+}
+
+export default function (stream, config) {
+    return stream.pipe(new FunctionMapper({fn: config.fn}));
 }
