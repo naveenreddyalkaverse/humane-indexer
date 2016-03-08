@@ -3,12 +3,12 @@ import _ from 'lodash';
 import {Command} from 'cli-boilerplate/lib/CliBuilder';
 
 export default function (indexerBuilder, indicesConfig) {
-    new Command(`createAllIndices`)
-      .description(`Creates All Index Settings and Mappings`)
+    new Command('createAllIndices')
+      .description('Creates All Index Settings and Mappings')
       .action(() => indexerBuilder().createIndex());
 
-    new Command(`deleteAllIndices`)
-      .description(`Deletes All Indices Data, Settings, and Mappings`)
+    new Command('deleteAllIndices')
+      .description('Deletes All Indices Data, Settings, and Mappings')
       .action(() => indexerBuilder().deleteIndex());
 
     _(indicesConfig.indices)
@@ -54,5 +54,7 @@ export default function (indexerBuilder, indicesConfig) {
             .option('--id <id>', `ID of the ${typeKey} to delete`)
             .description(`Deletes ${name}`)
             .action((args) => indexerBuilder.remove(null, {type: typeConfig.type, id: args.id}));
+
+          return true;
       });
 }

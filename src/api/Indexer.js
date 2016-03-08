@@ -1,5 +1,4 @@
 import _ from 'lodash';
-import Config from 'config';
 import Agent from 'agentkeepalive';
 import Promise from 'bluebird';
 import Request from 'request';
@@ -7,11 +6,6 @@ import Chalk from 'chalk';
 
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
-
-const ESConfig = Config.get('ES');
-const Url = ESConfig.url || 'http://localhost:9200';
-
-const logLevel = Config.has('LOG') ? Config.get('LOG') : 'info';
 
 const ADD_OP = 'add';
 const REMOVE_OP = 'remove';
@@ -23,37 +17,44 @@ const AGGREGATE_MODE = 'aggregate';
 // Actual implementation is in Internal class for API class to look readable and simple.
 //
 class IndexerInternal {
-    constructor(indicesConfig) {
+    constructor(config) {
+        this.logLevel = config.logConfig && config.logConfig.level || 'info';
+
         const keepAliveAgent = new Agent({
-            maxSockets: ESConfig.maxSockets || 10,
-            maxFreeSockets: ESConfig.maxFreeSockets || 5,
-            timeout: ESConfig.timeout || 60000,
-            keepAliveTimeout: ESConfig.keepAliveTimeout || 30000
+            maxSockets: config.esConfig && config.esConfig.maxSockets || 10,
+            maxFreeSockets: config.esConfig && config.esConfig.maxFreeSockets || 5,
+            timeout: config.esConfig && config.esConfig.timeout || 60000,
+            keepAliveTimeout: config.esConfig && config.esConfig.keepAliveTimeout || 30000
         });
 
         this.request = Promise.promisify(Request.defaults({
             json: true,
             agent: keepAliveAgent,
-            baseUrl: `${Url}`
+            baseUrl: `${config.esConfig && config.esConfig.url || 'http://localhost:9200'}`
         }));
 
-        this.lock = new Lock();
+        this.lock = new Lock({logLevel: this.logLevel, locksConfig: config.locksConfig, redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
 
-        this.aggregatorCache = new AggregatorCache(this, this.lock);
+        this.aggregatorCache = new AggregatorCache({
+            logLevel: this.logLevel,
+            cacheConfig: config.cacheConfig,
+            redisConfig: config.redisConfig,
+            redisSentinelConfig: config.redisSentinelConfig
+        }, this, this.lock);
 
         // TODO: validate indices config are proper
-        this.indicesConfig = indicesConfig;
+        this.indicesConfig = config.indicesConfig;
     }
 
     shutdown() {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Shutting down: Indexer');
         }
 
         return Promise.resolve(this.aggregatorCache.shutdown())
           .then(() => this.lock.shutdown())
           .then(() => {
-              if (logLevel === 'trace') {
+              if (this.logLevel === 'trace') {
                   console.log('Shut down: Indexer');
               }
 
@@ -70,7 +71,7 @@ class IndexerInternal {
             response = response[0];
         }
 
-        if (logLevel === 'debug' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
+        if (this.logLevel === 'debug' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
@@ -204,7 +205,7 @@ class IndexerInternal {
         const existingDoc = request.existingDoc;
         const partial = request.partial || false;
 
-        const aggregatorsConfig = this.indicesConfig.aggregators[typeConfig.type];
+        const aggregatorsConfig = this.indicesConfig.aggregators && this.indicesConfig.aggregators[typeConfig.type];
         if (!aggregatorsConfig) {
             return false;
         }
@@ -377,6 +378,8 @@ class IndexerInternal {
                         }
 
                         newAggregateDoc[measureName] = value;
+
+                        return true;
                     });
 
                     return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: aggregateIndexType});
@@ -404,6 +407,8 @@ class IndexerInternal {
                           found = true;
                           return false;
                       }
+
+                      return true;
                   });
 
                   if (found) {
@@ -420,6 +425,8 @@ class IndexerInternal {
                           found = true;
                           return false;
                       }
+
+                      return true;
                   });
 
                   if (!found && !partial) {
@@ -512,7 +519,10 @@ class IndexerInternal {
 
         const operation = () =>
           Promise.resolve(existingDoc || this.get({typeConfig, id}))
-            .then(response => existingDoc = response)
+            .then(response => {
+                existingDoc = response;
+                return response;
+            })
             .then(() => this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`}))
             .then(response => IndexerInternal.handleResponse(response, {404: true}))
             .then(response => {
@@ -541,7 +551,10 @@ class IndexerInternal {
 
         const operation = () =>
           Promise.resolve(existingDoc || this.get({typeConfig, id}))
-            .then(response => existingDoc = response)
+            .then(response => {
+                existingDoc = response;
+                return response;
+            })
             .then(() => {
                 if (!existingDoc) {
                     return false;
@@ -673,6 +686,8 @@ class IndexerInternal {
                         }
 
                         newAggregateDoc[measureName] = value;
+
+                        return true;
                     });
 
                     return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: typeConfig.type});

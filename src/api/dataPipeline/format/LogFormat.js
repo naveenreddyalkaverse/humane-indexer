@@ -1,7 +1,7 @@
 import LineSeparatorTransform from './../transforms/LineSeparatorTransform';
 import LogTransform from './../transforms/LogTransform';
 
-export default function (stream, config) {
+export default function (stream, params) {
     return stream.pipe(new LineSeparatorTransform())
-      .pipe(new LogTransform({regex: config.regex, fields: config.fields, transform: config.transform}));
+      .pipe(new LogTransform({regex: params.regex, fields: params.fields, transform: params.transform}));
 }

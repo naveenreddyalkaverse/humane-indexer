@@ -30,11 +30,11 @@ export function guard(condition, fn) {
         condition = limit(condition);
     }
 
-    return function () {
+    return function (...params) {
         const self = this;
-        const args = new Array(arguments.length);
+        const args = new Array(params.length);
         for (let i = 0; i < args.length; i++) {
-            args[i] = arguments[i];
+            args[i] = params[i];
         }
 
         return Promise.resolve(condition()).then((exit) => Promise.resolve(fn.apply(self, args)).finally(exit));

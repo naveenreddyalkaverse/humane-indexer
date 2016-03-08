@@ -1,12 +1,12 @@
 export default class IndexerOutput {
-    constructor(config, params) {
+    constructor(params) {
         if (!params || !params.indexer) {
             throw new Error('Params must have indexer instance');
         }
 
         this.indexer = params.indexer;
-        this.handler = params.indexer[config.handler];
-        this.indexType = config.indexType;
+        this.handler = params.indexer[params.handler];
+        this.indexType = params.indexType;
     }
 
     handle(doc, filter) {

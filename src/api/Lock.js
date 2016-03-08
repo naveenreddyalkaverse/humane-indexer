@@ -1,5 +1,4 @@
 import _ from 'lodash';
-import Config from 'config';
 import Promise from 'bluebird';
 import RedisLock from 'redislock';
 import SemLocks from 'semlocks';
@@ -11,16 +10,16 @@ import redisClient from './RedisClient';
 const LockAcquisitionError = RedisLock.LockAcquisitionError;
 const LockReleaseError = RedisLock.LockReleaseError;
 
-const logLevel = Config.has('LOG') ? Config.get('LOG') : 'info';
-
 class DistributedLock {
-    constructor() {
-        this.redisClient = redisClient();
-        const lockConfig = Config.has('LOCKS') && Config.get('LOCKS');
+    constructor(config) {
+        this.logLevel = config.logLevel;
+
+        this.redisClient = redisClient({redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
+        const locksConfig = config.locksConfig;
         RedisLock.setDefaults({
-            timeout: lockConfig.timeout || 200000,
-            retries: lockConfig.retries || 1000,
-            delay: lockConfig.delay || 100
+            timeout: locksConfig.timeout || 200000,
+            retries: locksConfig.retries || 1000,
+            delay: locksConfig.delay || 100
         });
     }
 
@@ -31,13 +30,13 @@ class DistributedLock {
           .then(() => ({
               key,
               release: () => {
-                  if (logLevel === 'trace') {
+                  if (this.logLevel === 'trace') {
                       console.log('Releasing lock: ', key);
                   }
 
                   return lock.release()
                     .then(() => {
-                        if (logLevel === 'trace') {
+                        if (this.logLevel === 'trace') {
                             console.log('Released lock: ', key);
                         }
 
@@ -58,7 +57,7 @@ class DistributedLock {
     }
 
     shutdown() {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Shutting down: DistributedLock');
         }
 
@@ -95,21 +94,23 @@ class LocalLock {
 }
 
 export default class Lock {
-    constructor() {
+    constructor(config) {
+        this.logLevel = config.logLevel;
+
         let mode = 'local';
-        if (Config.has('LOCKS') && Config.get('LOCKS').type === 'redis') {
+        if (config.locksConfig && config.locksConfig.type === 'redis') {
             mode = 'redis';
         }
 
         if (mode === 'redis') {
-            this.instance = new DistributedLock();
+            this.instance = new DistributedLock(config);
         } else {
-            this.instance = new LocalLock();
+            this.instance = new LocalLock(config);
         }
     }
 
     acquire(key) {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             const startTime = performanceNow();
 
             return this.instance.acquire(key)
@@ -165,7 +166,7 @@ export default class Lock {
     }
 
     shutdown() {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Shutting down: Lock');
         }
 

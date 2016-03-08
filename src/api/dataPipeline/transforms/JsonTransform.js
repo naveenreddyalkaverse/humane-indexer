@@ -155,7 +155,10 @@ export default class JsonTransform extends require('stream').Transform {
 
             delete this.value[this.key];
 
-            _.forEach(this.stack, (stackValue, index) => this.stack[index].value = null);
+            _.forEach(this.stack, (stackValue, index) => {
+                this.stack[index].value = null;
+                return true;
+            });
         };
     }
 

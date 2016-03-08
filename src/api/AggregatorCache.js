@@ -1,5 +1,4 @@
 import _ from 'lodash';
-import Config from 'config';
 import Promise from 'bluebird';
 import Chalk from 'chalk';
 
@@ -9,11 +8,10 @@ import redisClient from './RedisClient';
 
 const FlushSchedulerKey = 'aggregate-flusher';
 
-const logLevel = Config.has('LOG') ? Config.get('LOG') : 'info';
-
 class DistributedCache {
-    constructor() {
-        this.redisClient = redisClient();
+    constructor(config) {
+        this.logLevel = config.logLevel;
+        this.redisClient = redisClient({redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
     }
 
     static getKey(key) {
@@ -41,7 +39,7 @@ class DistributedCache {
     }
 
     shutdown() {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Shutting down: DistributedCache');
         }
 
@@ -81,10 +79,12 @@ class LocalCache {
 }
 
 export default class Cache {
-    constructor(indexer, lock) {
+    constructor(config, indexer, lock) {
+        this.logLevel = config.logLevel;
+
         let mode = 'local';
-        if (Config.has('CACHE')) {
-            const cacheConfig = Config.get('CACHE');
+        if (config.cacheConfig) {
+            const cacheConfig = config.cacheConfig;
             if (cacheConfig.type === 'redis') {
                 mode = 'redis';
             }
@@ -97,9 +97,9 @@ export default class Cache {
         }
 
         if (mode === 'redis') {
-            this.instance = new DistributedCache();
+            this.instance = new DistributedCache(config);
         } else {
-            this.instance = new LocalCache();
+            this.instance = new LocalCache(config);
         }
 
         this.scheduleHandle = null;
@@ -112,14 +112,14 @@ export default class Cache {
     store(key, data) {
         // if no schedule then create a schedule
         if (!this.schedule) {
-            if (logLevel === 'trace') {
+            if (this.logLevel === 'trace') {
                 console.log('Store: Scheduling Flush: No Keys');
             }
 
             this.scheduleFlush();
         }
 
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             const startTime = performanceNow();
             return this.instance.store(key, data)
               .then((result) => {
@@ -132,7 +132,7 @@ export default class Cache {
     }
 
     retrieve(key) {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             const startTime = performanceNow();
             return this.instance.retrieve(key)
               .then((result) => {
@@ -145,7 +145,7 @@ export default class Cache {
     }
 
     remove(key) {
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             const startTime = performanceNow();
             return this.instance.remove(key)
               .then((result) => {
@@ -171,7 +171,7 @@ export default class Cache {
 
                 console.log(Chalk.yellow(`Scheduled Flush: ${this.scheduleHandle}`));
             } else {
-                console.log(Chalk.yellow(`Schedule already exist`));
+                console.log(Chalk.yellow('Schedule already exist'));
             }
 
             return true;
@@ -196,7 +196,7 @@ export default class Cache {
         };
 
         return this.lock.usingLock(operation, FlushSchedulerKey, null,
-          (timeTaken) => console.log(Chalk.yellow('Removed Flush Schedule')));
+          () => console.log(Chalk.yellow('Removed Flush Schedule')));
     }
 
     flush(noSchedule) {
@@ -204,14 +204,14 @@ export default class Cache {
         console.log(Chalk.yellow('------------------------------------------------------'));
         console.log(Chalk.yellow('Starting aggregate flush...'));
 
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Flushing: AggregatorCache. NoSchedule: ', noSchedule);
         }
 
         return Promise.resolve(this.keys())
           .then(keys => {
               if (!keys || _.isEmpty(keys)) {
-                  if (logLevel === 'trace') {
+                  if (this.logLevel === 'trace') {
                       console.log('Removing Flush Schedule: found no keys');
                   }
 
@@ -230,7 +230,7 @@ export default class Cache {
                         return this.scheduleFlush();
                     }
 
-                    if (logLevel === 'trace') {
+                    if (this.logLevel === 'trace') {
                         console.log('Removing Flush Schedule: noSchedule: ', noSchedule);
                     }
 
@@ -241,7 +241,7 @@ export default class Cache {
 
     shutdown() {
         // first flush, then shutdown the instance
-        if (logLevel === 'trace') {
+        if (this.logLevel === 'trace') {
             console.log('Shutting down: AggregatorCache');
         }
 

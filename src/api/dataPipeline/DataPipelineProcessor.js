@@ -1,43 +1,13 @@
 import _ from 'lodash';
 import Promise from 'bluebird';
 import {EventEmitter} from 'events';
-
 import performanceNow from 'performance-now';
 
 import watchFile from './FileWatcher';
-
 import * as GuardedPromise from './GuardedPromise';
 
-// inputs
-import fileInput from './input/FileInput';
-
-// formats
-import jsonArrayFormat from './format/JsonArrayFormat';
-import jsonFormat from './format/JsonFormat';
-import logFormat from './format/LogFormat';
-
-// mappers
-import functionMapper from './mapper/FunctionMapper';
-
-// outputs
-import indexerOutput from './output/IndexerOutput';
-
-const Settings = {
-    source: {
-        file: fileInput
-    },
-    format: {
-        log: logFormat,
-        json: jsonFormat,
-        'json-array': jsonArrayFormat
-    },
-    mapper: {
-        fn: functionMapper
-    },
-    output: {
-        indexer: indexerOutput
-    }
-};
+import Settings from './Settings';
+import buildLookup from './LookupBuilder';
 
 const PROCESS_NEXT_EVENT = 'processNext';
 
@@ -48,6 +18,7 @@ export default class DataPipelineProcessor {
         this.watchQueue = [];
         this.running = false;
         this.eventEmitter = new EventEmitter();
+        this.lookups = {};
     }
 
     watch(params) {
@@ -76,60 +47,72 @@ export default class DataPipelineProcessor {
     }
 
     process(params) {
-        const sourceHandler = Settings.source[this.config.input.source.type];
-        const formatHandler = Settings.format[this.config.input.format.type];
+        const lookupConfigs = this.config.lookups || [];
 
-        console.log('Started processing: ', params.file);
+        const lookupPromises = _.mapValues(lookupConfigs, (lookupConfig, lookupKey) => this.lookups[lookupKey] || buildLookup(lookupKey, lookupConfig));
 
-        let stream = sourceHandler(this.config.input.source, params);
+        return Promise.props(lookupPromises)
+          .then(lookups => {
+              this.lookups = lookups;
 
-        stream = formatHandler(stream, this.config.input.format, params);
+              const sourceHandler = Settings.source[this.config.input.source.type];
+              const formatHandler = Settings.format[this.config.input.format.type];
 
-        if (this.config.mapper) {
-            const mapperHandler = Settings.mapper[this.config.mapper.type];
+              console.log('Started processing: ', params.file);
 
-            stream = mapperHandler(stream, this.config.mapper, params);
-        }
+              let stream = sourceHandler(_.extend({}, this.config.input.source, params));
 
-        let queuedCount = 0;
-        let processedCount = 0;
+              stream = formatHandler(stream, _.extend({}, this.config.input.format, params));
 
-        const outputHandler = new (Settings.output[this.config.output.type])(this.config.output, params);
+              if (this.config.mapper) {
+                  const mapperHandler = Settings.mapper[this.config.mapper.type];
 
-        stream.on('data', GuardedPromise.guard(this.config.output.concurrency || 1, (data) => {
-            const numIndex = queuedCount++;
+                  stream = mapperHandler(stream, _.extend({}, this.config.mapper, params, {lookups}));
+              }
 
-            const startTime = performanceNow();
+              let queuedCount = 0;
+              let processedCount = 0;
 
-            return Promise.resolve(outputHandler.handle(data, this.config.filter))
-              .then((result) => {
-                  console.log(`Processed #${numIndex}: ${result && (result._id || result.id)} in ${(performanceNow() - startTime).toFixed(3)} ms`);
+              const outputHandler = new (Settings.output[this.config.output.type])(_.extend({}, this.config.output, params));
 
-                  return result;
-              })
-              .catch(error => console.error('>>>> Error: ', error, error.stack))
-              .finally(() => processedCount++);
-        }));
+              stream.on('data', GuardedPromise.guard(this.config.output.concurrency || 1, (data) => {
+                  const numIndex = queuedCount++;
 
-        const _this = this;
+                  const startTime = performanceNow();
 
-        stream.on('end', () => {
-            function shutdownIndexerIfProcessed() {
-                if (queuedCount === processedCount) {
-                    if (!params.watch) {
-                        outputHandler.shutdown();
-                    } else {
-                        console.log('Completed processing: ', params.file);
-                        _this.running = false;
-                        _this.eventEmitter.emit(PROCESS_NEXT_EVENT);
-                    }
-                } else {
-                    // schedule next one
-                    _.delay(shutdownIndexerIfProcessed, 5000);
-                }
-            }
+                  return Promise.resolve(outputHandler.handle(data, this.config.filter))
+                    .then((result) => {
+                        console.log(`Processed #${numIndex}: ${result && (result._id || result.id)} in ${(performanceNow() - startTime).toFixed(3)} ms`);
 
-            shutdownIndexerIfProcessed();
-        });
+                        return result;
+                    })
+                    .catch(error => console.error('>>>> Error: ', error, error.stack))
+                    .finally(() => processedCount++);
+              }));
+
+              const _this = this;
+
+              return new Promise(resolve => {
+                  stream.on('end', () => {
+                      function shutdownIndexerIfProcessed() {
+                          if (queuedCount === processedCount) {
+                              if (!params.watch) {
+                                  resolve(outputHandler.shutdown());
+                              } else {
+                                  console.log('Completed processing: ', params.file);
+                                  _this.running = false;
+                                  _this.eventEmitter.emit(PROCESS_NEXT_EVENT);
+                                  resolve(true);
+                              }
+                          } else {
+                              // schedule next one
+                              _.delay(shutdownIndexerIfProcessed, 5000);
+                          }
+                      }
+
+                      shutdownIndexerIfProcessed();
+                  });
+              });
+          });
     }
 }
