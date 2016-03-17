@@ -1,8 +1,10 @@
 import _ from 'lodash';
-import Agent from 'agentkeepalive';
+import Http from 'http';
 import Promise from 'bluebird';
 import Request from 'request';
 import Chalk from 'chalk';
+
+import performanceNow from 'performance-now';
 
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
@@ -18,18 +20,28 @@ const AGGREGATE_MODE = 'aggregate';
 //
 class IndexerInternal {
     constructor(config) {
-        this.logLevel = config.logConfig && config.logConfig.level || 'info';
+        this.logLevel = config.logLevel || 'info';
 
-        const keepAliveAgent = new Agent({
+        //const keepAliveAgent = new Agent({
+        //    keepAlive: true,
+        //    maxSockets: config.esConfig && config.esConfig.maxSockets || 10,
+        //    maxFreeSockets: config.esConfig && config.esConfig.maxFreeSockets || 5,
+        //    timeout: config.esConfig && config.esConfig.timeout || 60000,
+        //    keepAliveTimeout: config.esConfig && config.esConfig.keepAliveTimeout || 30000
+        //});
+
+        const keepAliveAgent = new Http.Agent({
+            keepAlive: true,
             maxSockets: config.esConfig && config.esConfig.maxSockets || 10,
             maxFreeSockets: config.esConfig && config.esConfig.maxFreeSockets || 5,
-            timeout: config.esConfig && config.esConfig.timeout || 60000,
-            keepAliveTimeout: config.esConfig && config.esConfig.keepAliveTimeout || 30000
+            keepAliveMsecs: config.esConfig && config.esConfig.keepAliveTimeout || 5000
         });
 
         this.request = Promise.promisify(Request.defaults({
             json: true,
+            gzip: true,
             agent: keepAliveAgent,
+            time: this.logLevel === 'trace',
             baseUrl: `${config.esConfig && config.esConfig.url || 'http://localhost:9200'}`
         }));
 
@@ -39,7 +51,8 @@ class IndexerInternal {
             logLevel: this.logLevel,
             cacheConfig: config.cacheConfig,
             redisConfig: config.redisConfig,
-            redisSentinelConfig: config.redisSentinelConfig
+            redisSentinelConfig: config.redisSentinelConfig,
+            instanceName: config.instanceName
         }, this, this.lock);
 
         // TODO: validate indices config are proper
@@ -62,7 +75,7 @@ class IndexerInternal {
           });
     }
 
-    static handleResponse(response, okStatusCodes) {
+    handleResponse(response, okStatusCodes) {
         if (!response) {
             return Promise.reject('ERROR: No Response');
         }
@@ -71,14 +84,14 @@ class IndexerInternal {
             response = response[0];
         }
 
-        if (this.logLevel === 'debug' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
+        if (this.logLevel === 'debug' || this.logLevel === 'trace' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
 
             const format = response.statusCode < 300 ? Chalk.green : Chalk.red;
 
-            console.log(format(`Status: ${response.statusCode}`));
+            console.log(format(`Status: ${response.statusCode}, Elasped Time: ${response.elapsedTime}`));
 
             if (response.request.method !== 'HEAD') {
                 console.log(format(JSON.stringify(response.body, null, 2)));
@@ -89,20 +102,20 @@ class IndexerInternal {
         }
 
         if (response.statusCode < 300) {
-            return Promise.resolve(response.body);
+            return response.body;
         } else if (okStatusCodes && okStatusCodes[response.statusCode]) {
-            return Promise.resolve({status: response.statusCode, body: response.body});
+            return {status: response.statusCode, body: response.body, elapsedTime: response.elapsedTime};
         }
 
         return Promise.reject({status: response.statusCode, body: response.body});
     }
 
-    static handleResponseArray(responses, okStatusCodes) {
+    handleResponseArray(responses, okStatusCodes) {
         const finalResponses = [];
 
         let fail = false;
         _.forEach(responses, response =>
-          Promise.resolve(IndexerInternal.handleResponse(response, okStatusCodes))
+          Promise.resolve(this.handleResponse(response, okStatusCodes))
             .then(result => {
                 console.log('Pushing success: ', result);
                 finalResponses.push(result);
@@ -117,7 +130,7 @@ class IndexerInternal {
             return Promise.reject(finalResponses);
         }
 
-        return Promise.resolve(finalResponses);
+        return finalResponses;
     }
 
     typeConfig(typeOrConfig) {
@@ -136,13 +149,13 @@ class IndexerInternal {
               .value();
 
             return Promise.all(promises)
-              .then(responses => IndexerInternal.handleResponseArray(responses));
+              .then(responses => this.handleResponseArray(responses));
         }
 
         const indexConfig = this.indicesConfig.indices[indexKey];
 
         return this.request({method: 'DELETE', uri: `${indexConfig.store}`})
-          .then(IndexerInternal.handleResponse);
+          .then(response => this.handleResponse(response));
     }
 
     createIndex(indexKey) {
@@ -162,13 +175,13 @@ class IndexerInternal {
                   return this.request({
                       method: 'PUT',
                       uri: `${indexConfig.store}`,
-                      body: {settings: {analysis: indexConfig.analysis}, mappings}
+                      body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}
                   });
               })
               .value();
 
             return Promise.all(promises)
-              .then(responses => IndexerInternal.handleResponseArray(responses));
+              .then(responses => this.handleResponseArray(responses));
         }
 
         const indexConfig = this.indicesConfig.indices[indexKey];
@@ -182,21 +195,105 @@ class IndexerInternal {
               mappings[type.type] = type.mapping;
           });
 
-        return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {analysis: indexConfig.analysis}, mappings}})
-          .then(response => IndexerInternal.handleResponse(response, {404: true}));
+        return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
+          .then(response => this.handleResponse(response, {404: true}));
     }
 
     exists(request) {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
-          .then(response => IndexerInternal.handleResponse(response, {404: true}));
+          .then(response => this.handleResponse(response, {404: true}));
     }
 
     get(request) {
+        let startTime = null;
+
+        if (this.logLevel === 'trace') {
+            startTime = performanceNow();
+            console.log('Starting get: ', request.id);
+        }
+
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
-        return this.request({method: 'GET', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
-          .then(response => IndexerInternal.handleResponse(response, {404: true}))
-          .then((response) => (response || {})._source || null);
+        const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
+
+        return this.request({method: 'GET', uri})
+          .then(response => this.handleResponse(response, {404: true}))
+          .then(response => {
+              const result = !!response ? response._source : null;
+
+              if (this.logLevel === 'trace') {
+                  console.log('Got: ', uri, result, (performanceNow() - startTime).toFixed(3));
+              }
+
+              return result;
+          });
+    }
+
+    optimisedGet(request, measures) {
+        let startTime = null;
+
+        const typeConfig = this.typeConfig(request.typeConfig || request.type);
+
+        const fields = [];
+
+        _.forEach(measures, measureConfig => {
+            let measureType = null;
+            let measureName = null;
+            let measureTypeConfig = null;
+
+            if (_.isString(measureConfig)) {
+                measureName = measureConfig;
+                measureType = 'SUM';
+            } else if (_.isObject(measureConfig)) {
+                const config = _.first(_.toPairs(measureConfig));
+                measureName = config[0];
+                if (_.isString(config[1])) {
+                    measureType = config[1];
+                } else if (_.isFunction(config[1])) {
+                    measureType = 'FUNCTION';
+                } else if (!_.isFunction(config[1]) && _.isObject(config[1])) {
+                    measureType = config[1].type;
+                    measureTypeConfig = config[1];
+                }
+            }
+
+            if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
+                const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
+                fields.push(countField);
+            }
+
+            fields.push(measureName);
+
+            return true;
+        });
+
+        const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
+
+        if (this.logLevel === 'trace') {
+            startTime = performanceNow();
+            console.log('Starting get: ', uri, request.id);
+        }
+
+        return this.request({method: 'GET', uri, qs: {fields: _.join(fields, ',')}})
+          .then(response => {
+              let result = this.handleResponse(response, {404: true});
+
+              result = !!result ? result.fields : null;
+
+              if (result) {
+                  _.forEach(fields, field => {
+                      if (result[field] && _.isArray(result[field])) {
+                          result[field] = result[field][0];
+                      }
+                  });
+              }
+
+              if (this.logLevel === 'trace') {
+                  console.log('Got: ', uri, result, (performanceNow() - startTime).toFixed(3));
+              }
+
+              return result;
+          });
     }
 
     buildAggregates(request) {
@@ -267,11 +364,13 @@ class IndexerInternal {
 
             const key = `${aggregateIndexType}:${id}`;
 
+            const measuresConfig = aggregateConfig.measures || aggregatorsConfig.measures;
+
             const operation = () =>
               Promise.resolve(this.aggregatorCache.retrieve(key))
                 .then(cachedAggregateData => {
                     if (!cachedAggregateData) {
-                        return this.get({typeConfig: aggregateIndexConfig, id})
+                        return this.optimisedGet({typeConfig: aggregateIndexConfig, id}, measuresConfig)
                           .then(result => (result && {doc: result, opType, id, type: aggregateIndexType} || null));
                     }
 
@@ -287,9 +386,7 @@ class IndexerInternal {
                         }
                     }
 
-                    const measuresConfig = aggregateConfig.measures || aggregatorsConfig.measures;
-
-                    let existingAggregateDoc = {};
+                    let existingAggregateDoc = null;
                     let newAggregateDoc = {};
 
                     // aggregate already exist
@@ -297,6 +394,7 @@ class IndexerInternal {
                         existingAggregateDoc = existingAggregateData.doc;
                         newAggregateDoc = _.extend(newAggregateDoc, existingAggregateDoc, aggregate);
                     } else {
+                        existingAggregateDoc = {};
                         newAggregateDoc = _.extend(newAggregateDoc, aggregate);
                     }
 
@@ -382,7 +480,7 @@ class IndexerInternal {
                         return true;
                     });
 
-                    return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: aggregateIndexType});
+                    return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType, id, type: aggregateIndexType});
                 });
 
             const promise = this.lock.usingLock(operation, key);
@@ -443,8 +541,6 @@ class IndexerInternal {
     }
 
     flushAggregate(key) {
-        let finalResult = null;
-
         console.log(Chalk.yellow(`Flushing Key: ${key}`));
 
         const operation = (lockHandle) =>
@@ -457,20 +553,13 @@ class IndexerInternal {
                 const {doc, type, id} = cachedAggregate;
 
                 if (cachedAggregate.opType !== ADD_OP) {
-                    return this.update({type, id, doc, lockHandle});
+                    return this.update({type, id, doc, existingDoc: cachedAggregate.existingDoc, lockHandle});
                 }
 
                 //console.log('Flushing: ', doc);
                 return this.add({type, doc, id, lockHandle});
             })
-            .then((result) => {
-                finalResult = result;
-                if (result) {
-                    return this.aggregatorCache.remove(key);
-                }
-
-                return finalResult;
-            });
+            .then(() => this.aggregatorCache.remove(key));
 
         return this.lock.usingLock(operation, key, null, timeTaken => console.log(Chalk.yellow(`Flushed Key: ${key} in ${timeTaken}ms`)));
     }
@@ -492,13 +581,17 @@ class IndexerInternal {
             return false;
         }
 
+        if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
+            doc.weight = _.round(Math.log1p(typeConfig.weight(doc)), 3);
+        }
+
         const id = request.id || typeConfig.id(doc);
 
         let result = null;
 
         const operation = () =>
           this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-            .then(response => IndexerInternal.handleResponse(response, {404: true}))
+            .then(response => this.handleResponse(response, {404: true}))
             .then(response => {
                 result = response;
 
@@ -524,7 +617,7 @@ class IndexerInternal {
                 return response;
             })
             .then(() => this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`}))
-            .then(response => IndexerInternal.handleResponse(response, {404: true}))
+            .then(response => this.handleResponse(response, {404: true}))
             .then(response => {
                 result = response;
 
@@ -545,11 +638,17 @@ class IndexerInternal {
             transform(newDoc);
         }
 
+        if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
+            newDoc.weight = _.round(Math.log1p(typeConfig.weight(newDoc)), 3);
+        }
+
         const id = request.id || typeConfig.id(newDoc);
 
         let result = null;
 
         const operation = () =>
+            // TODO: fields for filter, aggregate, measures
+            // TODO: in case of partial update, fetch only fields part of the to be updated document, filter, aggregate, measures
           Promise.resolve(existingDoc || this.get({typeConfig, id}))
             .then(response => {
                 existingDoc = response;
@@ -575,7 +674,7 @@ class IndexerInternal {
                 }
 
                 return this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}})
-                  .then(response => IndexerInternal.handleResponse(response, {404: true}))
+                  .then(response => this.handleResponse(response, {404: true}))
                   .then(response => {
                       result = response;
 
@@ -605,98 +704,123 @@ class IndexerInternal {
 
         // for now upsert operation is the only supported for aggregate mode
         if (mode && mode === AGGREGATE_MODE) {
-            operation = () =>
-              Promise.resolve(this.aggregatorCache.retrieve(key))
-                .then(cachedAggregateData => {
-                    if (!cachedAggregateData) {
-                        return this.get({typeConfig, id})
-                          .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: typeConfig.type} || null));
-                    }
+            // TODO: wait if aggregator cache is currently flushing...
+            operation = (lockHandle) => {
+                let startTime = null;
 
-                    return cachedAggregateData;
-                })
-                .then(existingAggregateData => {
-                    const opType = existingAggregateData && existingAggregateData.opType || ADD_OP;
+                if (this.logLevel === 'trace') {
+                    startTime = performanceNow();
+                    console.log('Starting aggregate upsert: ', key);
+                }
 
-                    const aggregateDoc = typeConfig.aggregateBuilder(existingAggregateData && existingAggregateData.doc, doc);
+                return Promise.resolve(this.aggregatorCache.retrieve(key))
+                  .then(cachedAggregateData => {
+                      if (!cachedAggregateData) {
+                          return this.optimisedGet({typeConfig, id}, typeConfig.measures)
+                            .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: typeConfig.type} || null));
+                      }
 
-                    const measuresConfig = typeConfig.measures;
+                      return cachedAggregateData;
+                  })
+                  .then(existingAggregateData => {
+                      const opType = existingAggregateData && existingAggregateData.opType || ADD_OP;
 
-                    let existingAggregateDoc = {};
-                    let newAggregateDoc = {};
+                      const aggregateDoc = typeConfig.aggregateBuilder(existingAggregateData && existingAggregateData.doc, doc);
 
-                    // aggregate already exist
-                    if (existingAggregateData && existingAggregateData.doc) {
-                        existingAggregateDoc = existingAggregateData.doc;
-                        newAggregateDoc = _.extend(newAggregateDoc, existingAggregateDoc, aggregateDoc);
-                    } else {
-                        newAggregateDoc = _.extend(newAggregateDoc, aggregateDoc);
-                    }
+                      const measuresConfig = typeConfig.measures;
 
-                    _.forEach(measuresConfig, measureConfig => {
-                        let measureType = null;
-                        let measureName = null;
-                        let measureFunction = null;
-                        let measureTypeConfig = null;
+                      let existingAggregateDoc = null;
+                      let newAggregateDoc = {};
 
-                        if (_.isString(measureConfig)) {
-                            measureName = measureConfig;
-                            measureType = 'SUM';
-                        } else if (_.isObject(measureConfig)) {
-                            const config = _.first(_.toPairs(measureConfig));
-                            measureName = config[0];
-                            if (_.isString(config[1])) {
-                                measureType = config[1];
-                            } else if (_.isFunction(config[1])) {
-                                measureType = 'FUNCTION';
-                                measureFunction = config[1];
-                            } else if (_.isObject(config[1])) {
-                                measureType = config[1].type;
-                                measureTypeConfig = config[1];
-                            }
-                        }
+                      // aggregate already exist
+                      if (existingAggregateData && existingAggregateData.doc) {
+                          existingAggregateDoc = existingAggregateData.doc;
+                          newAggregateDoc = _.extend(newAggregateDoc, existingAggregateDoc, aggregateDoc);
+                      } else {
+                          existingAggregateDoc = {};
+                          newAggregateDoc = _.extend(newAggregateDoc, aggregateDoc);
+                      }
 
-                        if (request.partial && _.isUndefined(doc[measureName])) {
-                            // we skip if new doc does not have value in case of partial update
-                            return true;
-                        }
+                      _.forEach(measuresConfig, measureConfig => {
+                          let measureType = null;
+                          let measureName = null;
+                          let measureFunction = null;
+                          let measureTypeConfig = null;
 
-                        let value = _.get(existingAggregateDoc, measureName, 0);
+                          if (_.isString(measureConfig)) {
+                              measureName = measureConfig;
+                              measureType = 'SUM';
+                          } else if (_.isObject(measureConfig)) {
+                              const config = _.first(_.toPairs(measureConfig));
+                              measureName = config[0];
+                              if (_.isString(config[1])) {
+                                  measureType = config[1];
+                              } else if (_.isFunction(config[1])) {
+                                  measureType = 'FUNCTION';
+                                  measureFunction = config[1];
+                              } else if (_.isObject(config[1])) {
+                                  measureType = config[1].type;
+                                  measureTypeConfig = config[1];
+                              }
+                          }
 
-                        if (measureType === 'COUNT') {
-                            value += 1;
-                        } else if (measureType === 'SUM') {
-                            value += _.get(doc, measureName, 0);
-                        } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
-                            const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
+                          if (request.partial && _.isUndefined(doc[measureName])) {
+                              // we skip if new doc does not have value in case of partial update
+                              return true;
+                          }
 
-                            const totalValue = value * _.get(existingAggregateDoc, countField, 0) + _.get(doc, measureName, 0) * _.get(doc, countField, 0);
-                            const totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(doc, countField, 0);
+                          let value = _.get(existingAggregateDoc, measureName, 0);
 
-                            value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
-                        } else if (measureType === 'FUNCTION') {
-                            value = measureFunction(newAggregateDoc, opType);
+                          if (measureType === 'COUNT') {
+                              value += 1;
+                          } else if (measureType === 'SUM') {
+                              value += _.get(doc, measureName, 0);
+                          } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
+                              const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
 
-                            const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
-                            if (modifier) {
-                                value = _.invoke(Math, 'log1p', value);
-                            }
+                              const totalValue = value * _.get(existingAggregateDoc, countField, 0) + _.get(doc, measureName, 0) * _.get(doc, countField, 0);
+                              const totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(doc, countField, 0);
 
-                            value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
-                        }
+                              value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
+                          } else if (measureType === 'FUNCTION') {
+                              value = measureFunction(newAggregateDoc, opType);
 
-                        newAggregateDoc[measureName] = value;
+                              const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
+                              if (modifier) {
+                                  value = _.invoke(Math, 'log1p', value);
+                              }
 
-                        return true;
-                    });
+                              value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
+                          }
 
-                    return this.aggregatorCache.store(key, {doc: newAggregateDoc, opType, id, type: typeConfig.type});
-                });
-        } else {
-            operation = (lockHandle) =>
-              Promise.resolve(this.get({typeConfig, id}))
-                .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, id, lockHandle}));
+                          newAggregateDoc[measureName] = value;
+
+                          return true;
+                      });
+
+                      if (this.logLevel === 'trace') {
+                          console.log('Aggregation time: ', key, (performanceNow() - startTime).toFixed(3));
+                      }
+
+                      return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType, id, type: typeConfig.type});
+                  })
+                  .then(result => {
+                      if (this.logLevel === 'trace') {
+                          console.log('Finished aggregate upsert: ', key, (performanceNow() - startTime).toFixed(3));
+                      }
+
+                      return result;
+                  });
+            };
+
+            return this.aggregatorCache.ensureFlushComplete()
+              .then(() =>
+                this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`))));
         }
+
+        operation = (lockHandle) =>
+          Promise.resolve(this.get({typeConfig, id}))
+            .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, id, lockHandle}));
 
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }

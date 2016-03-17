@@ -17,48 +17,62 @@ class DistributedLock {
         this.redisClient = redisClient({redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
         const locksConfig = config.locksConfig;
         RedisLock.setDefaults({
-            timeout: locksConfig.timeout || 200000,
+            timeout: locksConfig.timeout || 10000,
             retries: locksConfig.retries || 1000,
             delay: locksConfig.delay || 100
         });
     }
 
     acquire(key) {
+        let acquireStartTime = null;
+        if (this.logLevel === 'trace') {
+            acquireStartTime = performanceNow();
+            console.log('(DistributedLock) Acquiring lock: ', key);
+        }
+
         const lock = RedisLock.createLock(this.redisClient);
 
         return lock.acquire(key)
-          .then(() => ({
-              key,
-              release: () => {
-                  if (this.logLevel === 'trace') {
-                      console.log('Releasing lock: ', key);
-                  }
-
-                  return lock.release()
-                    .then(() => {
-                        if (this.logLevel === 'trace') {
-                            console.log('Released lock: ', key);
-                        }
-
-                        return true;
-                    })
-                    .catch(LockReleaseError, (error) => {
-                        console.error('Error in releasing lock: ', key, error);
-
-                        //throw error;
-                        return true;
-                    });
+          .then(() => {
+              if (this.logLevel === 'trace') {
+                  console.log('(DistributedLock) Acquired lock: ', key, (performanceNow() - acquireStartTime).toFixed(3));
               }
-          }))
+
+              return ({
+                  key,
+                  release: () => {
+                      let releaseStartTime = null;
+                      if (this.logLevel === 'trace') {
+                          releaseStartTime = performanceNow();
+                          console.log('(DistributedLock) Releasing lock: ', key);
+                      }
+
+                      return lock.release()
+                        .then(() => {
+                            if (this.logLevel === 'trace') {
+                                console.log('(DistributedLock) Released lock: ', key, (performanceNow() - releaseStartTime).toFixed(3));
+                            }
+
+                            return true;
+                        })
+                        .catch(LockReleaseError, (error) => {
+                            console.error('(DistributedLock) Error in releasing lock: ', key, error);
+
+                            //throw error;
+                            return true;
+                        });
+                  }
+              });
+          })
           .catch(LockAcquisitionError, (error) => {
-              console.error('Error in acquiring lock: ', error);
+              console.error('(DistributedLock) Error in acquiring lock: ', error);
               return Promise.reject({key, error: true, details: error});
           });
     }
 
     shutdown() {
         if (this.logLevel === 'trace') {
-            console.log('Shutting down: DistributedLock');
+            console.log('(DistributedLock) Shutting down');
         }
 
         this.redisClient.end(true);
@@ -67,27 +81,53 @@ class DistributedLock {
 }
 
 class LocalLock {
-    constructor() {
+    constructor(config) {
+        this.logLevel = config.logLevel;
         this.locks = SemLocks;
     }
 
     acquire(key) {
-        return new Promise((resolve, reject) => {
-            //console.log('Acquiring lock: ', key);
-            this.locks.acquire(key, (err, release) => {
-                if (err) {
-                    console.error('Error in acquiring lock: ', key, err);
-                    reject({key, error: true, details: err});
-                    return;
-                }
+        //return new Promise((resolve, reject) => {
+        //    let acquireStartTime = null;
+        //    if (this.logLevel === 'trace') {
+        //        acquireStartTime = performanceNow();
+        //        console.log('(LocalLock) Acquiring Lock: ', key);
+        //    }
+        //
+        //    const handle = this.locks.acquire(key, {wait: 200, ttl: 200, priority: 1}, (err, release) => {
+        //        if (err) {
+        //            console.error('Error in acquiring lock: ', key, err);
+        //            reject({key, error: true, details: err});
+        //            return;
+        //        }
+        //
+        //        if (this.logLevel === 'trace') {
+        //            console.log('(LocalLock) Acquired Lock: ', key, (performanceNow() - acquireStartTime).toFixed(3));
+        //        }
+        //
+        //        resolve({
+        //            key, release: () => {
+        //                let lockReleaseStartTime = null;
+        //
+        //                if (this.logLevel === 'trace') {
+        //                    lockReleaseStartTime = performanceNow();
+        //                    console.log('(LocalLock) Releasing Lock: ', key);
+        //                }
+        //
+        //                return release(handle, key);
+        //            }
+        //        });
+        //    });
+        //});
 
-                //console.log('Acquired lock: ', key);
-                resolve({key, release});
-            });
-        });
+        return {key, release: () => true};
     }
 
     shutdown() {
+        if (this.logLevel === 'trace') {
+            console.log('Shutting down: LocalLock');
+        }
+
         delete this.locks;
         return true;
     }
@@ -113,9 +153,9 @@ export default class Lock {
         if (this.logLevel === 'trace') {
             const startTime = performanceNow();
 
-            return this.instance.acquire(key)
+            return Promise.resolve(this.instance.acquire(key))
               .then((result) => {
-                  console.log('Acquired lock: ', key, (performanceNow() - startTime).toFixed(3));
+                  console.log('Acquired lock: ', key, result, (performanceNow() - startTime).toFixed(3));
                   return result;
               });
         }
@@ -129,11 +169,15 @@ export default class Lock {
         const startTime = performanceNow();
 
         if (lockHandle) {
-            return operation(lockHandle)
+            return Promise.resolve(operation(lockHandle))
               .then(result => {
                   if (log) log((performanceNow() - startTime).toFixed(3));
 
                   return result;
+              })
+              .catch(error => {
+                  console.error('Error in operation: ', error, error.stack);
+                  return null;
               });
         }
 
@@ -142,17 +186,25 @@ export default class Lock {
         //      return lockHandle.release();
         //  });
 
-        return this.acquire(key)
+        let opStartTime = null;
+
+        return Promise.resolve(this.acquire(key))
 
           .then(handle => {
               lockHandle = handle;
+
+              opStartTime = performanceNow();
 
               return operation(lockHandle);
           })
 
           //.finally(() => lockHandle.release())
 
-          .then((result) => {
+          .then(result => {
+              if (this.logLevel === 'trace') {
+                  console.log('Operation time: ', (performanceNow() - opStartTime).toFixed(3));
+              }
+
               finalResult = result;
 
               return lockHandle.release();
@@ -162,6 +214,10 @@ export default class Lock {
               if (log) log((performanceNow() - startTime).toFixed(3));
 
               return finalResult;
+          })
+          .catch(error => {
+              console.error('Error in operation: ', error, error.stack);
+              return null;
           });
     }
 

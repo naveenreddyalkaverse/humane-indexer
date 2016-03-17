@@ -1,6 +1,7 @@
 import _ from 'lodash';
 import Promise from 'bluebird';
 import Chalk from 'chalk';
+import {EventEmitter} from 'events';
 
 import performanceNow from 'performance-now';
 
@@ -10,32 +11,38 @@ const FlushSchedulerKey = 'aggregate-flusher';
 
 class DistributedCache {
     constructor(config) {
+        this.instanceName = config.instanceName || 'default';
         this.logLevel = config.logLevel;
-        this.redisClient = redisClient({redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
+        this.redisClient = redisClient(_.pick(config, ['redisConfig', 'redisSentinelConfig']));
+        this.keyPrefix = `${this.instanceName}:agg:`;
     }
 
-    static getKey(key) {
-        return `aggregate:${key}`;
+    getKey(key) {
+        return /*_.startsWith(key, this.keyPrefix) ? key : */ `${this.keyPrefix}${key}`;
     }
 
     store(key, data) {
-        return this.redisClient.setAsync(DistributedCache.getKey(key), JSON.stringify(data))
+        console.log('(DistributedCache) Storing key: ', key, this.getKey(key));
+
+        return this.redisClient.setAsync(this.getKey(key), JSON.stringify(data))
           .then(() => data);
     }
 
     retrieve(key) {
-        return this.redisClient.getAsync(DistributedCache.getKey(key))
+        return this.redisClient.getAsync(this.getKey(key))
           .then((data) => !!data ? JSON.parse(data) : null);
     }
 
     remove(key) {
-        return this.redisClient.delAsync(DistributedCache.getKey(key));
+        console.log('(DistributedCache) Removing key: ', key, this.getKey(key));
+
+        return this.redisClient.delAsync(this.getKey(key));
     }
 
     keys() {
         // TODO: probably SCAN based implementation is better, but there may not be many keys too...
-        return this.redisClient.keysAsync('aggregate:*')
-          .then((keys) => keys.map(key => key.substring(10, key.length)));
+        return this.redisClient.keysAsync(`${this.keyPrefix}*`)
+          .then((keys) => keys.map(key => key.substring(this.keyPrefix.length, key.length)));
     }
 
     shutdown() {
@@ -49,12 +56,20 @@ class DistributedCache {
 }
 
 class LocalCache {
-    constructor() {
+    constructor(config) {
+        this.logLevel = config.logLevel;
+
+        this.keysCount = 0;
         this.cache = {};
     }
 
     store(key, data) {
+        if (this.logLevel === 'trace') {
+            console.log('(LocalCache) Storing key: ', key, this.keysCount);
+        }
+
         this.cache[key] = data;
+        this.keysCount++;
         return data;
     }
 
@@ -65,6 +80,12 @@ class LocalCache {
     remove(key) {
         this.cache[key] = undefined;
         delete this.cache[key];
+        this.keysCount--;
+
+        if (this.logLevel === 'trace') {
+            console.log('(LocalCache) Removed key: ', key, this.keysCount);
+        }
+
         return true;
     }
 
@@ -107,6 +128,9 @@ export default class Cache {
 
         this.indexer = indexer;
         this.lock = lock;
+        this.eventEmitter = new EventEmitter();
+
+        this._flushing = false;
     }
 
     store(key, data) {
@@ -121,7 +145,7 @@ export default class Cache {
 
         if (this.logLevel === 'trace') {
             const startTime = performanceNow();
-            return this.instance.store(key, data)
+            return Promise.resolve(this.instance.store(key, data))
               .then((result) => {
                   console.log('Stored key: ', key, (performanceNow() - startTime).toFixed(3));
                   return result;
@@ -134,7 +158,7 @@ export default class Cache {
     retrieve(key) {
         if (this.logLevel === 'trace') {
             const startTime = performanceNow();
-            return this.instance.retrieve(key)
+            return Promise.resolve(this.instance.retrieve(key))
               .then((result) => {
                   console.log('Retrieved key: ', key, (performanceNow() - startTime).toFixed(3));
                   return result;
@@ -147,7 +171,7 @@ export default class Cache {
     remove(key) {
         if (this.logLevel === 'trace') {
             const startTime = performanceNow();
-            return this.instance.remove(key)
+            return Promise.resolve(this.instance.remove(key))
               .then((result) => {
                   console.log('Removed key: ', key, (performanceNow() - startTime).toFixed(3));
                   return result;
@@ -199,10 +223,38 @@ export default class Cache {
           () => console.log(Chalk.yellow('Removed Flush Schedule')));
     }
 
+    ensureFlushComplete() {
+        return new Promise((resolve, reject) => {
+            if (!this._flushing) {
+                resolve(true);
+                return true;
+            }
+
+            const _this = this;
+
+            const checkFlushComplete = () => {
+                if (!_this._flushing) {
+                    return resolve(true);
+                }
+
+                _.delay(checkFlushComplete, 5000);
+                return true;
+            };
+
+            _.delay(checkFlushComplete, 5000);
+            return true;
+        });
+    }
+
     flush(noSchedule) {
+        // flush started
+        this._flushing = true;
+
         console.log();
         console.log(Chalk.yellow('------------------------------------------------------'));
         console.log(Chalk.yellow('Starting aggregate flush...'));
+
+        const flushStartTime = performanceNow();
 
         if (this.logLevel === 'trace') {
             console.log('Flushing: AggregatorCache. NoSchedule: ', noSchedule);
@@ -218,11 +270,8 @@ export default class Cache {
                   return this.removeFlushSchedule();
               }
 
-              return Promise.map(keys, (key) => this.indexer.flushAggregate(key), {concurrency: 3})
+              return Promise.map(keys, (key) => this.indexer.flushAggregate(key), {concurrency: 1})
                 .then(() => {
-                    console.log(Chalk.yellow('...Finished aggregate flush'));
-                    console.log(Chalk.yellow('------------------------------------------------------'));
-
                     if (!noSchedule) {
                         this.schedule = null;
                         this.scheduleHandle = null;
@@ -236,6 +285,11 @@ export default class Cache {
 
                     return this.removeFlushSchedule();
                 });
+          })
+          .finally(() => {
+              console.log(Chalk.yellow(`...Finished aggregate flush in: ${(performanceNow() - flushStartTime).toFixed(3)}`));
+              console.log(Chalk.yellow('------------------------------------------------------'));
+              this._flushing = false;
           });
     }
 
