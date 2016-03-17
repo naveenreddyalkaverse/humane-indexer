@@ -1,6 +1,6 @@
 import _ from 'lodash';
 
-import {Command} from 'cli-boilerplate/lib/CliBuilder';
+import {Command} from 'command-line-boilerplate/lib/CliBuilder';
 
 export default function (indexerBuilder, indicesConfig) {
     new Command('createAllIndices')
