@@ -13,71 +13,96 @@
 
 This method adds data of given type if it does not exist, else updates.
 
-**Method 1**
+- **Method 1**
 
-- Type: `POST`
-- URL: `/upsert`
-- BODY: `{type: <type>, doc: <data>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/upsert`
+    
+    - BODY  : `{type: <type>, doc: <data>}`
 
-**Method 2**
+  
+- **Method 2**
 
-- TYPE: `POST`
-- URL: `/:type`
-- BODY `{doc: <data>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/:type`
+    
+    - BODY  : `{doc: <data>}`
+
 
 #### Partial Update
 
 This method is optimised for partial updates of given type and id.
 
-- Type: `POST`
-- URL: `/partialUpdate`
-- BODY: `{type: <type>, id: <id>, doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/partialUpdate`
+
+- BODY  : `{type: <type>, id: <id>, doc: <data>}`
+
 
 #### Full Update
 
 This method does full update of document of given type and id.
 
-**Method 1**
+- **Method 1**
 
-- Type: `POST`
-- URL: `/update`
-- BODY: `{type: <type>, id: <id>, doc: <data>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/update`
+    
+    - BODY  : `{type: <type>, id: <id>, doc: <data>}`
 
-**Method 2**
+  
+- **Method 2**
 
-- Type: `POST`
-- URL: `/:type/:id`
-- BODY: `{doc: <data>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/:type/:id`
+    
+    - BODY  : `{doc: <data>}`
+
 
 #### Remove
 
 This method removes document of given type and id.
 
-**Method 1**
+- **Method 1**
 
-- Type: `POST`
-- URL: `/remove`
-- BODY: `{type: <type>, id: <id>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/remove`
+    
+    - BODY  : `{type: <type>, id: <id>}`
 
-**Method 2**
 
-- Type: `DELETE`
-- URL: `/:type/:id`
+- **Method 2**
+
+    - Type  : `DELETE`
+    
+    - URL   : `/:type/:id`
+
 
 #### Add
 
 This method adds document of given type.
 
-**Method 1**
+- **Method 1**
 
-- Type: `POST`
-- URL: `/add`
-- BODY: `{type: <type>, doc: <data>}`
+    - TYPE  : `POST`
+    
+    - URL   : `/add`
+    
+    - BODY  : `{type: <type>, doc: <data>}`
 
-**Method 2**
 
-- Type: `PUT`
-- URL: `/:type`
-- BODY: `{doc: <data>}`
+- **Method 2**
+
+    - TYPE  : `PUT`
+    
+    - URL   : `/:type`
+    
+    - BODY  : `{doc: <data>}`
 
 ## Configuration
