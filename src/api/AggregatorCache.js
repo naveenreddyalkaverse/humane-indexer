@@ -5,7 +5,7 @@ import {EventEmitter} from 'events';
 
 import performanceNow from 'performance-now';
 
-import redisClient from './RedisClient';
+import buildRedisClient from 'humane-node-commons/lib/RedisClient';
 
 const FlushSchedulerKey = 'aggregate-flusher';
 
@@ -13,7 +13,7 @@ class DistributedCache {
     constructor(config) {
         this.instanceName = config.instanceName || 'default';
         this.logLevel = config.logLevel;
-        this.redisClient = redisClient(_.pick(config, ['redisConfig', 'redisSentinelConfig']));
+        this.redisClient = buildRedisClient(_.pick(config, ['redisConfig', 'redisSentinelConfig']));
         this.keyPrefix = `${this.instanceName}:agg:`;
     }
 

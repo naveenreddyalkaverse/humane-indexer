@@ -1,10 +1,13 @@
 import _ from 'lodash';
-import Http from 'http';
 import Promise from 'bluebird';
-import Request from 'request';
 import Chalk from 'chalk';
 
 import performanceNow from 'performance-now';
+
+import buildRequest from 'humane-node-commons/lib/Request';
+
+import ValidationError from 'humane-node-commons/lib/ValidationError';
+import InternalServiceError from 'humane-node-commons/lib/InternalServiceError';
 
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
@@ -22,28 +25,7 @@ class IndexerInternal {
     constructor(config) {
         this.logLevel = config.logLevel || 'info';
 
-        //const keepAliveAgent = new Agent({
-        //    keepAlive: true,
-        //    maxSockets: config.esConfig && config.esConfig.maxSockets || 10,
-        //    maxFreeSockets: config.esConfig && config.esConfig.maxFreeSockets || 5,
-        //    timeout: config.esConfig && config.esConfig.timeout || 60000,
-        //    keepAliveTimeout: config.esConfig && config.esConfig.keepAliveTimeout || 30000
-        //});
-
-        const keepAliveAgent = new Http.Agent({
-            keepAlive: true,
-            maxSockets: config.esConfig && config.esConfig.maxSockets || 10,
-            maxFreeSockets: config.esConfig && config.esConfig.maxFreeSockets || 5,
-            keepAliveMsecs: config.esConfig && config.esConfig.keepAliveTimeout || 5000
-        });
-
-        this.request = Promise.promisify(Request.defaults({
-            json: true,
-            gzip: true,
-            agent: keepAliveAgent,
-            time: this.logLevel === 'trace',
-            baseUrl: `${config.esConfig && config.esConfig.url || 'http://localhost:9200'}`
-        }));
+        this.request = buildRequest(_.extend({}, config.esConfig, {logLevel: this.logLevel, baseUrl: config.esConfig && config.esConfig.url || 'http://localhost:9200'}));
 
         this.lock = new Lock({logLevel: this.logLevel, locksConfig: config.locksConfig, redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
 
@@ -107,9 +89,10 @@ class IndexerInternal {
             return {status: response.statusCode, body: response.body, elapsedTime: response.elapsedTime};
         }
 
-        return Promise.reject({status: response.statusCode, body: response.body});
+        throw new InternalServiceError('Internal Service Error', {code: 'INTERNAL_SERVICE_ERROR', details: response.body && response.body.error || response.body});
     }
 
+    // TODO: fix this
     handleResponseArray(responses, okStatusCodes) {
         const finalResponses = [];
 
@@ -117,11 +100,9 @@ class IndexerInternal {
         _.forEach(responses, response =>
           Promise.resolve(this.handleResponse(response, okStatusCodes))
             .then(result => {
-                console.log('Pushing success: ', result);
                 finalResponses.push(result);
             })
             .catch(error => {
-                console.log('Pushing error: ', error);
                 finalResponses.push(error);
                 fail = true;
             }));
@@ -134,8 +115,17 @@ class IndexerInternal {
     }
 
     typeConfig(typeOrConfig) {
+        if (!typeOrConfig) {
+            throw new ValidationError('Undefined Type', {code: 'UNDEFINED_TYPE'});
+        }
+
         if (_.isString(typeOrConfig)) {
-            return this.indicesConfig.types[typeOrConfig];
+            const typeConfig = this.indicesConfig.types[typeOrConfig];
+            if (!typeConfig) {
+                throw new ValidationError('Unrecognized Type', {code: 'UNRECOGNIZED_TYPE', details: {type: typeOrConfig}});
+            }
+
+            return typeConfig;
         }
 
         return typeOrConfig;
@@ -306,18 +296,6 @@ class IndexerInternal {
         if (!aggregatorsConfig) {
             return false;
         }
-
-        //let newMeasures = null;
-        //if (newDoc) {
-        //    newMeasures = {};
-        //    _(aggregatorsConfig.measures).forEach(measure => newMeasures[measure] = newDoc[measure]);
-        //}
-        //
-        //let existingMeasures = null;
-        //if (existingDoc) {
-        //    existingMeasures = {};
-        //    _(aggregatorsConfig.measures).forEach(measure => existingMeasures[measure] = existingDoc[measure]);
-        //}
 
         const promises = [];
 
