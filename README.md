@@ -9,29 +9,29 @@
 >    * All requests shall have `Content-Type` header as: `Content-Type: application/json`
 
 
-#### Upsert
+### Upsert
 
 This method adds data of given type if it does not exist, else updates.
 
-- **Method 1**
+###### **Method 1**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/upsert`
-    
-    - BODY  : `{type: <type>, doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/upsert`
+
+- BODY  : `{type: <type>, doc: <data>}`
 
   
-- **Method 2**
+###### **Method 2**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/:type`
-    
-    - BODY  : `{doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/:type`
+
+- BODY  : `{doc: <data>}`
 
 
-#### Partial Update
+### Partial Update
 
 This method is optimised for partial updates of given type and id.
 
@@ -42,67 +42,67 @@ This method is optimised for partial updates of given type and id.
 - BODY  : `{type: <type>, id: <id>, doc: <data>}`
 
 
-#### Full Update
+### Full Update
 
 This method does full update of document of given type and id.
 
-- **Method 1**
+###### **Method 1**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/update`
-    
-    - BODY  : `{type: <type>, id: <id>, doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/update`
+
+- BODY  : `{type: <type>, id: <id>, doc: <data>}`
 
   
-- **Method 2**
+###### **Method 2**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/:type/:id`
-    
-    - BODY  : `{doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/:type/:id`
+
+- BODY  : `{doc: <data>}`
 
 
-#### Remove
+### Remove
 
 This method removes document of given type and id.
 
-- **Method 1**
+###### **Method 1**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/remove`
-    
-    - BODY  : `{type: <type>, id: <id>}`
+- TYPE  : `POST`
 
+- URL   : `/remove`
 
-- **Method 2**
-
-    - Type  : `DELETE`
-    
-    - URL   : `/:type/:id`
+- BODY  : `{type: <type>, id: <id>}`
 
 
-#### Add
+###### **Method 2**
+
+- Type  : `DELETE`
+
+- URL   : `/:type/:id`
+
+
+### Add
 
 This method adds document of given type.
 
-- **Method 1**
+###### **Method 1**
 
-    - TYPE  : `POST`
-    
-    - URL   : `/add`
-    
-    - BODY  : `{type: <type>, doc: <data>}`
+- TYPE  : `POST`
+
+- URL   : `/add`
+
+- BODY  : `{type: <type>, doc: <data>}`
 
 
-- **Method 2**
+###### **Method 2**
 
-    - TYPE  : `PUT`
-    
-    - URL   : `/:type`
-    
-    - BODY  : `{doc: <data>}`
+- TYPE  : `PUT`
+
+- URL   : `/:type`
+
+- BODY  : `{doc: <data>}`
 
 ## Configuration
