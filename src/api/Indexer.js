@@ -567,7 +567,7 @@ class IndexerInternal {
 
         const id = request.id || typeConfig.id(doc);
 
-        if (!request.id) {
+        if (!id) {
             throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
         }
 
@@ -591,7 +591,7 @@ class IndexerInternal {
 
         const id = request.id;
 
-        if (!request.id) {
+        if (!id) {
             throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
         }
 
@@ -639,7 +639,7 @@ class IndexerInternal {
 
         const id = request.id || typeConfig.id(newDoc);
 
-        if (!request.id) {
+        if (!id) {
             throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
         }
 
@@ -697,7 +697,7 @@ class IndexerInternal {
 
         const id = typeConfig.id(doc);
 
-        if (!request.id) {
+        if (!id) {
             throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
         }
 
