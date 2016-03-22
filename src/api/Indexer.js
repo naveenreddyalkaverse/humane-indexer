@@ -57,7 +57,7 @@ class IndexerInternal {
           });
     }
 
-    handleResponse(response, okStatusCodes) {
+    handleResponse(response, okStatusCodes, operation) {
         if (!response) {
             return Promise.reject('ERROR: No Response');
         }
@@ -84,7 +84,7 @@ class IndexerInternal {
         }
 
         if (response.statusCode < 300 || okStatusCodes && okStatusCodes[response.statusCode]) {
-            return _.extend({_status: response.statusCode, _elapsedTime: response.elapsedTime}, response.body);
+            return _.extend({_status: response.statusCode, _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
         }
 
         console.error('Error in processResponse: ', response.statusCode, response.body && response.body.error);
@@ -92,12 +92,12 @@ class IndexerInternal {
         throw new InternalServiceError('Internal Service Error', {code: 'INTERNAL_SERVICE_ERROR'});
     }
 
-    handleResponseArray(responses, okStatusCodes) {
+    handleResponseArray(responses, okStatusCodes, operation) {
         return Promise
           .all(_.map(responses, response => {
               let promise = null;
               try {
-                  promise = this.handleResponse(response, okStatusCodes);
+                  promise = this.handleResponse(response, okStatusCodes, operation);
               } catch (error) {
                   promise = Promise.reject(error);
               }
@@ -138,13 +138,13 @@ class IndexerInternal {
               .value();
 
             return Promise.all(promises)
-              .then(responses => this.handleResponseArray(responses));
+              .then(responses => this.handleResponseArray(responses, {404: true}, 'DELETE_INDICES'));
         }
 
         const indexConfig = this.indicesConfig.indices[indexKey];
 
         return this.request({method: 'DELETE', uri: `${indexConfig.store}`})
-          .then(response => this.handleResponse(response));
+          .then(response => this.handleResponse(response, {404: true}, 'DELETE_INDEX'));
     }
 
     createIndex(indexKey) {
@@ -170,7 +170,7 @@ class IndexerInternal {
               .value();
 
             return Promise.all(promises)
-              .then(responses => this.handleResponseArray(responses));
+              .then(responses => this.handleResponseArray(responses, {404: true}, 'CREATE_INDICES'));
         }
 
         const indexConfig = this.indicesConfig.indices[indexKey];
@@ -185,13 +185,13 @@ class IndexerInternal {
           });
 
         return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
-          .then(response => this.handleResponse(response, {404: true}));
+          .then(response => this.handleResponse(response, {404: true}, 'CREATE_INDEX'));
     }
 
     exists(request) {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
-          .then(response => this.handleResponse(response, {404: true}));
+          .then(response => this.handleResponse(response, {404: true}, 'EXISTS'));
     }
 
     get(request) {
@@ -206,12 +206,12 @@ class IndexerInternal {
         const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
 
         return this.request({method: 'GET', uri})
-          .then(response => this.handleResponse(response, {404: true}))
+          .then(response => this.handleResponse(response, {404: true}, 'GET'))
           .then(response => {
               const result = !!response ? response._source : null;
 
               if (this.logLevel === 'trace') {
-                  console.log('Got: ', uri, result, (performanceNow() - startTime).toFixed(3));
+                  console.log('Got: ', uri, (performanceNow() - startTime).toFixed(3));
               }
 
               return result;
@@ -265,7 +265,7 @@ class IndexerInternal {
 
         return this.request({method: 'GET', uri, qs: {fields: _.join(fields, ',')}})
           .then(response => {
-              let result = this.handleResponse(response, {404: true});
+              let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
 
               result = !!result ? result.fields : null;
 
@@ -278,7 +278,7 @@ class IndexerInternal {
               }
 
               if (this.logLevel === 'trace') {
-                  console.log('Got: ', uri, result, (performanceNow() - startTime).toFixed(3));
+                  console.log('Got: ', uri, (performanceNow() - startTime).toFixed(3));
               }
 
               return result;
@@ -568,13 +568,13 @@ class IndexerInternal {
 
         const operation = () =>
           this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-            .then(response => this.handleResponse(response, {404: true}))
+            .then(response => this.handleResponse(response, {404: true}, 'ADD'))
             .then(response => {
                 result = response;
 
                 return this.buildAggregates({typeConfig, newDoc: doc});
             })
-            .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status']));
+            .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status', '_operation']));
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
@@ -599,13 +599,13 @@ class IndexerInternal {
                 }
 
                 return this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
-                  .then(response => this.handleResponse(response, {404: true}))
+                  .then(response => this.handleResponse(response, {404: true}, 'REMOVE'))
                   .then(response => {
                       result = response;
 
                       return this.buildAggregates({typeConfig, existingDoc, partial: request.partial});
                   })
-                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', 'found', '_status']));
+                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', 'found', '_status', '_operation']));
             });
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.red(`Removed ${typeConfig.type} #${id} in ${timeTaken}ms`)));
@@ -639,7 +639,7 @@ class IndexerInternal {
             })
             .then(() => {
                 if (!existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: false, _status: 404};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: false, _status: 404, _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'};
                 }
 
                 if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc)) {
@@ -649,7 +649,7 @@ class IndexerInternal {
                     }
 
                     // more of a partial update
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: true, _skip: true, _status: 404};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: true, _skip: true, _status: 404, _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'};
                 }
 
                 if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
@@ -657,13 +657,13 @@ class IndexerInternal {
                 }
 
                 return this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}})
-                  .then(response => this.handleResponse(response, {404: true}))
+                  .then(response => this.handleResponse(response, {404: true}, request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'))
                   .then(response => {
                       result = response;
 
                       return this.buildAggregates({typeConfig, newDoc, existingDoc, partial: request.partial});
                   })
-                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status']));
+                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status', '_operation']));
             });
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
@@ -786,12 +786,12 @@ class IndexerInternal {
 
                       return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType, id, type: typeConfig.type});
                   })
-                  .then(result => {
+                  .then(() => {
                       if (this.logLevel === 'trace') {
                           console.log('Finished aggregate upsert: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
-                      return result;
+                      return {_status: 200, _id: id, _type: typeConfig.type, _index: typeConfig.index, _operation: 'LAZY_AGGREGATE'};
                   });
             };
 
