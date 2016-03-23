@@ -22,7 +22,9 @@ class DistributedCache {
     }
 
     store(key, data) {
-        console.log('(DistributedCache) Storing key: ', key, this.getKey(key));
+        if (this.logLevel === 'trace') {
+            console.log('(DistributedCache) Storing key: ', key, this.getKey(key));
+        }
 
         return this.redisClient.setAsync(this.getKey(key), JSON.stringify(data))
           .then(() => data);
@@ -34,7 +36,9 @@ class DistributedCache {
     }
 
     remove(key) {
-        console.log('(DistributedCache) Removing key: ', key, this.getKey(key));
+        if (this.logLevel === 'trace') {
+            console.log('(DistributedCache) Removing key: ', key, this.getKey(key));
+        }
 
         return this.redisClient.delAsync(this.getKey(key));
     }

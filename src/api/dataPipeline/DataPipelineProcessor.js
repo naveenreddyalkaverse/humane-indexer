@@ -82,7 +82,7 @@ export default class DataPipelineProcessor {
 
                   return Promise.resolve(outputHandler.handle(data, this.config.filter))
                     .then((result) => {
-                        console.log(`Processed #${numIndex}: ${result && (result._id || result.id)} in ${(performanceNow() - startTime).toFixed(3)} ms`);
+                        console.log(`Processed #${numIndex}: ${JSON.stringify(result)} in ${(performanceNow() - startTime).toFixed(3)} ms`);
 
                         return result;
                     })

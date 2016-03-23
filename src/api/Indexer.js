@@ -84,10 +84,11 @@ class IndexerInternal {
         }
 
         if (response.statusCode < 300 || okStatusCodes && okStatusCodes[response.statusCode]) {
-            return _.extend({_status: response.statusCode, _elapsedTime: response.elapsedTime, _operation: operation, _success: response.statusCode === 200}, response.body);
+            return _.extend({_statusCode: response.statusCode, _status: response.statusCode === 200 ? 'SUCCESS' : 'FAIL', _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
         }
 
-        throw new InternalServiceError('Internal Service Error', {code: 'INTERNAL_SERVICE_ERROR', status: response.statusCode, details: response.body && response.body.error || response.body});
+        throw new InternalServiceError('Internal Service Error', {_statusCode: response.statusCode, details: response.body && response.body.error || response.body
+        });
     }
 
     handleResponseArray(responses, okStatusCodes, operation) {
@@ -95,31 +96,31 @@ class IndexerInternal {
           .all(_.map(responses, response => {
               let promise = null;
               try {
-                  promise = this.handleResponse(response, okStatusCodes, operation);
+                  promise = Promise.resolve(this.handleResponse(response, okStatusCodes, operation));
               } catch (error) {
                   promise = Promise.reject(error);
               }
 
               return promise.reflect();
           }))
-          .each(inspection => {
+          .map(inspection => {
               if (inspection.isFulfilled()) {
-                  console.log('Successful Response: ', inspection.value());
-              } else {
-                  console.error('Error Response: ', inspection.reason());
+                  return inspection.value();
               }
+
+              return inspection.reason();
           });
     }
 
     typeConfig(typeOrConfig) {
         if (!typeOrConfig) {
-            throw new ValidationError('Undefined Type', {code: 'UNDEFINED_TYPE'});
+            throw new ValidationError('Undefined Type', {details: {code: 'UNDEFINED_TYPE'}});
         }
 
         if (_.isString(typeOrConfig)) {
             const typeConfig = this.indicesConfig.types[typeOrConfig];
             if (!typeConfig) {
-                throw new ValidationError('Unrecognized Type', {code: 'UNRECOGNIZED_TYPE', details: {type: typeOrConfig}});
+                throw new ValidationError('Unrecognized Type', {details: {code: 'UNRECOGNIZED_TYPE', type: typeOrConfig}});
             }
 
             return typeConfig;
@@ -200,7 +201,7 @@ class IndexerInternal {
         }
 
         if (!request.id) {
-            throw new ValidationError('No ID has been specified', {code: 'UNDEFINED_ID'});
+            throw new ValidationError('No ID has been specified', {details: {code: 'UNDEFINED_ID'}});
         }
 
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
@@ -225,7 +226,7 @@ class IndexerInternal {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
 
         if (!request.id) {
-            throw new ValidationError('No ID has been specified', {code: 'UNDEFINED_ID'});
+            throw new ValidationError('No ID has been specified', {details: {code: 'UNDEFINED_ID'}});
         }
 
         const fields = [];
@@ -553,22 +554,22 @@ class IndexerInternal {
             transform(doc);
         }
 
+        const id = request.id || typeConfig.id(doc);
+
+        if (!id) {
+            throw new ValidationError('No ID has been specified or can be calculated', {details: {code: 'UNDEFINED_ID'}});
+        }
+
         if (request.filter && _.isFunction(request.filter) && !request.filter(doc)) {
-            return {_type: typeConfig.type, _index: typeConfig.index, found: true, _skip: true, _status: 404, _success: false, _operation: 'ADD'};
+            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'SKIP', _operation: 'ADD'};
         }
 
         if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(doc)) {
-            return {_type: typeConfig.type, _index: typeConfig.index, found: true, _skip: true, _status: 404, _success: false, _operation: 'ADD'};
+            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'SKIP', _operation: 'ADD'};
         }
 
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
             doc.weight = _.round(Math.log1p(typeConfig.weight(doc)), 3);
-        }
-
-        const id = request.id || typeConfig.id(doc);
-
-        if (!id) {
-            throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
         }
 
         let result = null;
@@ -581,7 +582,7 @@ class IndexerInternal {
 
                 return this.buildAggregates({typeConfig, newDoc: doc});
             })
-            .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status', '_operation', '_success']));
+            .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_statusCode', '_status', '_operation']));
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
@@ -592,7 +593,7 @@ class IndexerInternal {
         const id = request.id;
 
         if (!id) {
-            throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
+            throw new ValidationError('No ID has been specified or can be calculated', {details: {code: 'UNDEFINED_ID'}});
         }
 
         let existingDoc = request.doc;
@@ -607,7 +608,7 @@ class IndexerInternal {
             })
             .then(() => {
                 if (!existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: false, _status: 404, _success: false};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'NOT_FOUND'};
                 }
 
                 return this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
@@ -617,7 +618,7 @@ class IndexerInternal {
 
                       return this.buildAggregates({typeConfig, existingDoc, partial: request.partial});
                   })
-                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', 'found', '_status', '_operation', '_success']));
+                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', 'found', '_statusCode', '_status', '_operation']));
             });
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.red(`Removed ${typeConfig.type} #${id} in ${timeTaken}ms`)));
@@ -640,14 +641,14 @@ class IndexerInternal {
         const id = request.id || typeConfig.id(newDoc);
 
         if (!id) {
-            throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
+            throw new ValidationError('No ID has been specified or can be calculated', {details: {code: 'UNDEFINED_ID'}});
         }
 
         let result = null;
 
         const operation = () =>
-            // TODO: fields for filter, aggregate, measures
-            // TODO: in case of partial update, fetch only fields part of the to be updated document, filter, aggregate, measures
+          // TODO: fields for filter, aggregate, measures
+          // TODO: in case of partial update, fetch only fields part of the to be updated document, filter, aggregate, measures
           Promise.resolve(existingDoc || this.get({typeConfig, id}))
             .then(response => {
                 existingDoc = response;
@@ -655,7 +656,15 @@ class IndexerInternal {
             })
             .then(() => {
                 if (!existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: false, _status: 404, _success: false, _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'};
+                    return {
+                        _id: id,
+                        _type: typeConfig.type,
+                        _index: typeConfig.index,
+                        _statusCode: 404,
+                        _status: 'FAIL',
+                        _failCode: 'NOT_FOUND',
+                        _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'
+                    };
                 }
 
                 if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc)) {
@@ -665,7 +674,15 @@ class IndexerInternal {
                     }
 
                     // more of a partial update
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, found: true, _skip: true, _status: 404, _success: false, _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'};
+                    return {
+                        _id: id,
+                        _type: typeConfig.type,
+                        _index: typeConfig.index,
+                        _statusCode: 404,
+                        _status: 'FAIL',
+                        _failCode: 'SKIP',
+                        _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'
+                    };
                 }
 
                 if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
@@ -679,7 +696,7 @@ class IndexerInternal {
 
                       return this.buildAggregates({typeConfig, newDoc, existingDoc, partial: request.partial});
                   })
-                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_status', '_operation', '_success']));
+                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_statusCode', '_status', '_operation']));
             });
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
@@ -698,7 +715,7 @@ class IndexerInternal {
         const id = typeConfig.id(doc);
 
         if (!id) {
-            throw new ValidationError('No ID has been specified or can be calculated', {code: 'UNDEFINED_ID'});
+            throw new ValidationError('No ID has been specified or can be calculated', {details: {code: 'UNDEFINED_ID'}});
         }
 
         const key = `${typeConfig.type}:${id}`;
@@ -810,7 +827,7 @@ class IndexerInternal {
                           console.log('Finished aggregate upsert: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
-                      return {_status: 200, _id: id, _type: typeConfig.type, _index: typeConfig.index, _operation: 'LAZY_AGGREGATE'};
+                      return {_statusCode: 200, _status: 'SUCCESS', _id: id, _type: typeConfig.type, _index: typeConfig.index, _operation: 'LAZY_AGGREGATE'};
                   });
             };
 
@@ -838,12 +855,12 @@ export default class Indexer {
     errorWrap(promise) {
         return Promise.resolve(promise)
           .catch(error => {
-              if (error && (error.name === 'ValidationError' || error.name === 'InternalServiceError')) {
+              if (error && (error._errorCode === 'VALIDATION_ERROR' || error._errorCode === 'INTERNAL_SERVICE_ERROR')) {
                   // rethrow same error
                   throw error;
               }
 
-              throw new InternalServiceError('Internal Service Error', {code: 'INTERNAL_SERVICE_ERROR', details: error && error.cause || error, stack: error && error.stack});
+              throw new InternalServiceError('Internal Service Error', {details: error && error.cause || error, stack: error && error.stack});
           });
     }
 
