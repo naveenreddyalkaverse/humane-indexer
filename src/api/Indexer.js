@@ -71,7 +71,7 @@ class IndexerInternal {
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
 
-            const format = response.statusCode < 300 ? Chalk.green : Chalk.red;
+            const format = response.statusCode < 400 ? Chalk.green : Chalk.red;
 
             console.log(format(`Status: ${response.statusCode}, Elapsed Time: ${response.elapsedTime}`));
 
@@ -83,11 +83,12 @@ class IndexerInternal {
             console.log();
         }
 
-        if (response.statusCode < 300 || okStatusCodes && okStatusCodes[response.statusCode]) {
-            return _.extend({_statusCode: response.statusCode, _status: response.statusCode === 200 ? 'SUCCESS' : 'FAIL', _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
+        if (response.statusCode < 400 || okStatusCodes && okStatusCodes[response.statusCode]) {
+            return _.extend({_statusCode: response.statusCode, _status: response.statusCode < 400 ? 'SUCCESS' : 'FAIL', _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
         }
 
-        throw new InternalServiceError('Internal Service Error', {_statusCode: response.statusCode, details: response.body && response.body.error || response.body
+        throw new InternalServiceError('Internal Service Error', {
+            _statusCode: response.statusCode, details: response.body && response.body.error || response.body
         });
     }
 
@@ -575,14 +576,21 @@ class IndexerInternal {
         let result = null;
 
         const operation = () =>
-          this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-            .then(response => this.handleResponse(response, {404: true}, 'ADD'))
-            .then(response => {
-                result = response;
+          Promise.resolve(_.isUndefined(request.existingDoc) ? this.get({typeConfig, id}) : request.existingDoc)
+            .then(existingDoc => {
+                if (existingDoc) {
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'EXISTS_ALREADY', _operation: 'ADD'};
+                }
 
-                return this.buildAggregates({typeConfig, newDoc: doc});
-            })
-            .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_statusCode', '_status', '_operation']));
+                return this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
+                  .then(response => this.handleResponse(response, {404: true}, 'ADD'))
+                  .then(response => {
+                      result = response;
+
+                      return this.buildAggregates({typeConfig, newDoc: doc});
+                  })
+                  .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_statusCode', '_status', '_operation']));
+            });
 
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.blue(`Added ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
@@ -596,19 +604,13 @@ class IndexerInternal {
             throw new ValidationError('No ID has been specified or can be calculated', {details: {code: 'UNDEFINED_ID'}});
         }
 
-        let existingDoc = request.doc;
-
         let result = null;
 
         const operation = () =>
-          Promise.resolve(existingDoc || this.get({typeConfig, id}))
-            .then(response => {
-                existingDoc = response;
-                return response;
-            })
-            .then(() => {
+          Promise.resolve(request.doc || this.get({typeConfig, id}))
+            .then(existingDoc => {
                 if (!existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'NOT_FOUND'};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'NOT_FOUND', _operation: 'REMOVE'};
                 }
 
                 return this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
@@ -629,7 +631,6 @@ class IndexerInternal {
         const transform = typeConfig.transform;
 
         const newDoc = request.doc;
-        let existingDoc = request.existingDoc;
         if (transform && _.isFunction(transform)) {
             transform(newDoc);
         }
@@ -649,12 +650,8 @@ class IndexerInternal {
         const operation = () =>
           // TODO: fields for filter, aggregate, measures
           // TODO: in case of partial update, fetch only fields part of the to be updated document, filter, aggregate, measures
-          Promise.resolve(existingDoc || this.get({typeConfig, id}))
-            .then(response => {
-                existingDoc = response;
-                return response;
-            })
-            .then(() => {
+          Promise.resolve(request.existingDoc || this.get({typeConfig, id}))
+            .then(existingDoc => {
                 if (!existingDoc) {
                     return {
                         _id: id,
@@ -720,11 +717,9 @@ class IndexerInternal {
 
         const key = `${typeConfig.type}:${id}`;
 
-        let operation = null;
-
         // for now upsert operation is the only supported for aggregate mode
         if (mode && mode === AGGREGATE_MODE) {
-            operation = () => {
+            const aggregateOperation = () => {
                 let startTime = null;
 
                 if (this.logLevel === 'trace') {
@@ -833,12 +828,12 @@ class IndexerInternal {
 
             return this.aggregatorCache.ensureFlushComplete()
               .then(() =>
-                this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`))));
+                this.lock.usingLock(aggregateOperation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`))));
         }
 
-        operation = (lockHandle) =>
+        const operation = (lockHandle) =>
           Promise.resolve(this.get({typeConfig, id}))
-            .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, id, lockHandle}));
+            .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, existingDoc: null, id, lockHandle}));
 
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
