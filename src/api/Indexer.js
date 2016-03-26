@@ -510,8 +510,13 @@ class IndexerInternal {
                       return true;
                   });
 
-                  if (!found && !partial) {
-                      aggregatesToRemove.push(existingDocAggregate);
+                  if (!found) {
+                      // for partial case if there is no doc aggregate, still update aggregate for existing doc aggregate
+                      if (partial && (!newDocAggregates || newDocAggregates.length === 0)) {
+                          aggregatesToUpdate.push(existingDocAggregate);
+                      } else if (!partial) {
+                          aggregatesToRemove.push(existingDocAggregate);
+                      }
                   }
               });
 
