@@ -1,11 +1,8 @@
-import _ from 'lodash';
 import Promise from 'bluebird';
 import RedisLock from 'redislock';
 import SemLocks from 'semlocks';
 
 import performanceNow from 'performance-now';
-
-import buildRedisClient from 'humane-node-commons/lib/RedisClient';
 
 const LockAcquisitionError = RedisLock.LockAcquisitionError;
 const LockReleaseError = RedisLock.LockReleaseError;
@@ -14,7 +11,7 @@ class DistributedLock {
     constructor(config) {
         this.logLevel = config.logLevel;
 
-        this.redisClient = buildRedisClient({redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
+        this.redisClient = config.redisClient;
         const locksConfig = config.locksConfig;
         RedisLock.setDefaults({
             timeout: locksConfig.timeout || 10000,
@@ -35,7 +32,7 @@ class DistributedLock {
         return lock.acquire(key)
           .then(() => {
               if (this.logLevel === 'trace') {
-                  console.log('(DistributedLock) Acquired lock: ', key, (performanceNow() - acquireStartTime).toFixed(3));
+                  console.log(`(DistributedLock) Acquired lock '${key}' in ${(performanceNow() - acquireStartTime).toFixed(3)}ms`);
               }
 
               return ({
@@ -44,19 +41,19 @@ class DistributedLock {
                       let releaseStartTime = null;
                       if (this.logLevel === 'trace') {
                           releaseStartTime = performanceNow();
-                          console.log('(DistributedLock) Releasing lock: ', key);
+                          console.log(`(DistributedLock) Releasing lock '${key}'`);
                       }
 
                       return lock.release()
                         .then(() => {
                             if (this.logLevel === 'trace') {
-                                console.log('(DistributedLock) Released lock: ', key, (performanceNow() - releaseStartTime).toFixed(3));
+                                console.log(`(DistributedLock) Released lock '${key}' in ${(performanceNow() - releaseStartTime).toFixed(3)}ms`);
                             }
 
                             return true;
                         })
                         .catch(LockReleaseError, (error) => {
-                            console.error('(DistributedLock) Error in releasing lock: ', key, error);
+                            console.error(`(DistributedLock) Error in releasing lock '${key}': `, error);
 
                             //throw error;
                             return true;
@@ -65,7 +62,7 @@ class DistributedLock {
               });
           })
           .catch(LockAcquisitionError, (error) => {
-              console.error('(DistributedLock) Error in acquiring lock: ', error);
+              console.error(`(DistributedLock) Error in acquiring lock '${key}': `, error);
               return Promise.reject({key, error: true, details: error});
           });
     }
@@ -75,7 +72,6 @@ class DistributedLock {
             console.log('(DistributedLock) Shutting down');
         }
 
-        this.redisClient.end(true);
         return true;
     }
 }
@@ -205,7 +201,7 @@ export default class Lock {
               return finalResult;
           })
           .finally(() => {
-              if (!lockReleased) {
+              if (!lockReleased && lockHandle) {
                   return lockHandle.release();
               }
 

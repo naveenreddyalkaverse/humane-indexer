@@ -5,6 +5,7 @@ import Chalk from 'chalk';
 import performanceNow from 'performance-now';
 
 import buildRequest from 'humane-node-commons/lib/Request';
+import buildRedisClient from 'humane-node-commons/lib/RedisClient';
 
 import ValidationError from 'humane-node-commons/lib/ValidationError';
 import InternalServiceError from 'humane-node-commons/lib/InternalServiceError';
@@ -27,15 +28,13 @@ class IndexerInternal {
 
         this.request = buildRequest(_.extend({}, config.esConfig, {logLevel: this.logLevel, baseUrl: config.esConfig && config.esConfig.url || 'http://localhost:9200'}));
 
-        this.lock = new Lock({logLevel: this.logLevel, locksConfig: config.locksConfig, redisConfig: config.redisConfig, redisSentinelConfig: config.redisSentinelConfig});
+        if (config.redisConfig || config.redisSentinelConfig) {
+            this.redisClient = buildRedisClient(_.pick(config, ['redisConfig', 'redisSentinelConfig']));
+        }
 
-        this.aggregatorCache = new AggregatorCache({
-            logLevel: this.logLevel,
-            cacheConfig: config.cacheConfig,
-            redisConfig: config.redisConfig,
-            redisSentinelConfig: config.redisSentinelConfig,
-            instanceName: config.instanceName
-        }, this, this.lock);
+        this.lock = new Lock({logLevel: this.logLevel, locksConfig: config.locksConfig, redisClient: this.redisClient});
+
+        this.aggregatorCache = new AggregatorCache({logLevel: this.logLevel, cacheConfig: config.cacheConfig, redisClient: this.redisClient, instanceName: config.instanceName}, this, this.lock);
 
         // TODO: validate indices config are proper
         this.indicesConfig = config.indicesConfig;
@@ -48,6 +47,10 @@ class IndexerInternal {
 
         return Promise.resolve(this.aggregatorCache.shutdown())
           .then(() => this.lock.shutdown())
+          .then(() => {
+              this.redisClient.end(true);
+              return true;
+          })
           .then(() => {
               if (this.logLevel === 'trace') {
                   console.log('Shut down: Indexer');
@@ -66,7 +69,7 @@ class IndexerInternal {
             response = response[0];
         }
 
-        if (this.logLevel === 'debug' || this.logLevel === 'trace' || (response.statusCode >= 300 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
+        if (this.logLevel === 'debug' || this.logLevel === 'trace' || (response.statusCode >= 400 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));

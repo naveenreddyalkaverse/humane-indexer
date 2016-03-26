@@ -5,20 +5,18 @@ import {EventEmitter} from 'events';
 
 import performanceNow from 'performance-now';
 
-import buildRedisClient from 'humane-node-commons/lib/RedisClient';
-
 const FlushSchedulerKey = 'aggregate-flusher';
 
 class DistributedCache {
     constructor(config) {
         this.instanceName = config.instanceName || 'default';
         this.logLevel = config.logLevel;
-        this.redisClient = buildRedisClient(_.pick(config, ['redisConfig', 'redisSentinelConfig']));
+        this.redisClient = config.redisClient;
         this.keyPrefix = `${this.instanceName}:agg:`;
     }
 
     getKey(key) {
-        return /*_.startsWith(key, this.keyPrefix) ? key : */ `${this.keyPrefix}${key}`;
+        return `${this.keyPrefix}${key}`;
     }
 
     store(key, data) {
@@ -54,7 +52,6 @@ class DistributedCache {
             console.log('Shutting down: DistributedCache');
         }
 
-        this.redisClient.end(true);
         return true;
     }
 }
@@ -110,7 +107,7 @@ export default class Cache {
         let mode = 'local';
         if (config.cacheConfig) {
             const cacheConfig = config.cacheConfig;
-            if (cacheConfig.type === 'redis') {
+            if (cacheConfig.type === 'redis' || config.redisClient) {
                 mode = 'redis';
             }
 
@@ -303,7 +300,8 @@ export default class Cache {
             console.log('Shutting down: AggregatorCache');
         }
 
-        return Promise.resolve(this.removeFlushSchedule())
+        return Promise.resolve(this.ensureFlushComplete())
+          .then(() => this.removeFlushSchedule())
           .then(() => this.flush(true))
           .then(() => this.instance.shutdown())
           .then(() => {
