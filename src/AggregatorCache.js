@@ -30,7 +30,13 @@ class DistributedCache {
 
     retrieve(key) {
         return this.redisClient.getAsync(this.getKey(key))
-          .then((data) => !!data ? JSON.parse(data) : null);
+          .then(data => {
+              if (!_.isUndefined(data) && !_.isNull(data) && _.isString(data)) {
+                  return JSON.parse(data);
+              }
+
+              return null;
+          });
     }
 
     remove(key) {

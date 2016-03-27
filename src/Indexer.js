@@ -841,7 +841,13 @@ class IndexerInternal {
 
         const operation = (lockHandle) =>
           Promise.resolve(this.get({typeConfig, id}))
-            .then((existingDoc) => existingDoc ? this.update({typeConfig, id, doc, existingDoc, lockHandle}) : this.add({typeConfig, doc, existingDoc: null, id, lockHandle}));
+            .then(existingDoc => {
+                if (existingDoc) {
+                    return this.update({typeConfig, id, doc, existingDoc, lockHandle});
+                }
+
+                return this.add({typeConfig, doc, existingDoc: null, id, lockHandle});
+            });
 
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
