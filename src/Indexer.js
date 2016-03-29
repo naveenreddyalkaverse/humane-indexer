@@ -13,9 +13,27 @@ import InternalServiceError from 'humane-node-commons/lib/InternalServiceError';
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
 
-const ADD_OP = 'add';
-const REMOVE_OP = 'remove';
-const UPDATE_OP = 'update';
+const GET_OP = 'GET';
+const ADD_OP = 'ADD';
+const REMOVE_OP = 'REMOVE';
+const UPDATE_OP = 'UPDATE';
+const PARTIAL_UPDATE_OP = 'PARTIAL_UPDATE';
+
+const SUCCESS_STATUS = 'SUCCESS';
+const FAIL_STATUS = 'FAIL';
+
+const NOT_FOUND_FAIL_CODE = 'NOT_FOUND';
+const SKIP_FAIL_CODE = 'SKIP';
+
+const TRACE_LOG_LEVEL = 'trace';
+const DEBUG_LOG_LEVEL = 'debug';
+const INFO_LOG_LEVEL = 'info';
+
+const PUT_HTTP_METHOD = 'PUT';
+const POST_HTTP_METHOD = 'POST';
+const DELETE_HTTP_METHOD = 'DELETE';
+const GET_HTTP_METHOD = 'GET';
+const HEAD_HTTP_METHOD = 'HEAD';
 
 const AGGREGATE_MODE = 'aggregate';
 
@@ -24,7 +42,7 @@ const AGGREGATE_MODE = 'aggregate';
 //
 class IndexerInternal {
     constructor(config) {
-        this.logLevel = config.logLevel || 'info';
+        this.logLevel = config.logLevel || INFO_LOG_LEVEL;
 
         this.request = buildRequest(_.extend({}, config.esConfig, {logLevel: this.logLevel, baseUrl: config.esConfig && config.esConfig.url || 'http://localhost:9200'}));
 
@@ -41,7 +59,7 @@ class IndexerInternal {
     }
 
     shutdown() {
-        if (this.logLevel === 'trace') {
+        if (this.logLevel === TRACE_LOG_LEVEL) {
             console.log('Shutting down: Indexer');
         }
 
@@ -52,7 +70,7 @@ class IndexerInternal {
               return true;
           })
           .then(() => {
-              if (this.logLevel === 'trace') {
+              if (this.logLevel === TRACE_LOG_LEVEL) {
                   console.log('Shut down: Indexer');
               }
 
@@ -69,7 +87,7 @@ class IndexerInternal {
             response = response[0];
         }
 
-        if (this.logLevel === 'debug' || this.logLevel === 'trace' || (response.statusCode >= 400 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== 'HEAD')) {
+        if (this.logLevel === DEBUG_LOG_LEVEL || this.logLevel === TRACE_LOG_LEVEL || (response.statusCode >= 400 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== HEAD_HTTP_METHOD)) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
@@ -78,7 +96,7 @@ class IndexerInternal {
 
             console.log(format(`Status: ${response.statusCode}, Elapsed Time: ${response.elapsedTime}`));
 
-            if (response.request.method !== 'HEAD') {
+            if (response.request.method !== HEAD_HTTP_METHOD) {
                 console.log(format(JSON.stringify(response.body, null, 2)));
             }
 
@@ -87,7 +105,7 @@ class IndexerInternal {
         }
 
         if (response.statusCode < 400 || okStatusCodes && okStatusCodes[response.statusCode]) {
-            return _.extend({_statusCode: response.statusCode, _status: response.statusCode < 400 ? 'SUCCESS' : 'FAIL', _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
+            return _.extend({_statusCode: response.statusCode, _status: response.statusCode < 400 ? SUCCESS_STATUS : FAIL_STATUS, _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
         }
 
         throw new InternalServiceError('Internal Service Error', {
@@ -137,7 +155,7 @@ class IndexerInternal {
         if (!indexKey) {
             const promises = _(this.indicesConfig.indices)
               .values()
-              .map((indexConfig) => this.request({method: 'DELETE', uri: `${indexConfig.store}`}))
+              .map((indexConfig) => this.request({method: DELETE_HTTP_METHOD, uri: `${indexConfig.store}`}))
               .value();
 
             return Promise.all(promises)
@@ -146,7 +164,7 @@ class IndexerInternal {
 
         const indexConfig = this.indicesConfig.indices[indexKey];
 
-        return this.request({method: 'DELETE', uri: `${indexConfig.store}`})
+        return this.request({method: DELETE_HTTP_METHOD, uri: `${indexConfig.store}`})
           .then(response => this.handleResponse(response, {404: true}, 'DELETE_INDEX'));
     }
 
@@ -165,7 +183,7 @@ class IndexerInternal {
                     });
 
                   return this.request({
-                      method: 'PUT',
+                      method: PUT_HTTP_METHOD,
                       uri: `${indexConfig.store}`,
                       body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}
                   });
@@ -187,20 +205,20 @@ class IndexerInternal {
               mappings[type.type] = type.mapping;
           });
 
-        return this.request({method: 'PUT', uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
+        return this.request({method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
           .then(response => this.handleResponse(response, {404: true}, 'CREATE_INDEX'));
     }
 
     exists(request) {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
-        return this.request({method: 'HEAD', uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
+        return this.request({method: HEAD_HTTP_METHOD, uri: `${typeConfig.index}/${typeConfig.type}/${request.id}`})
           .then(response => this.handleResponse(response, {404: true}, 'EXISTS'));
     }
 
     get(request) {
         let startTime = null;
 
-        if (this.logLevel === 'trace') {
+        if (this.logLevel === TRACE_LOG_LEVEL) {
             startTime = performanceNow();
         }
 
@@ -211,12 +229,12 @@ class IndexerInternal {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
 
-        return this.request({method: 'GET', uri})
-          .then(response => this.handleResponse(response, {404: true}, 'GET'))
+        return this.request({method: GET_HTTP_METHOD, uri})
+          .then(response => this.handleResponse(response, {404: true}, GET_OP))
           .then(response => {
               const result = !!response ? response._source : null;
 
-              if (this.logLevel === 'trace') {
+              if (this.logLevel === TRACE_LOG_LEVEL) {
                   console.log('get: ', uri, (performanceNow() - startTime).toFixed(3));
               }
 
@@ -268,11 +286,11 @@ class IndexerInternal {
 
         const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
 
-        if (this.logLevel === 'trace') {
+        if (this.logLevel === TRACE_LOG_LEVEL) {
             startTime = performanceNow();
         }
 
-        return this.request({method: 'GET', uri, qs: {fields: _.join(fields, ',')}})
+        return this.request({method: GET_HTTP_METHOD, uri, qs: {fields: _.join(fields, ',')}})
           .then(response => {
               let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
 
@@ -286,7 +304,7 @@ class IndexerInternal {
                   });
               }
 
-              if (this.logLevel === 'trace') {
+              if (this.logLevel === TRACE_LOG_LEVEL) {
                   console.log('optimisedGet: ', uri, (performanceNow() - startTime).toFixed(3));
               }
 
@@ -296,12 +314,20 @@ class IndexerInternal {
 
     buildAggregates(request) {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
-        const newDoc = request.newDoc;
+        let newDoc = request.newDoc;
         const existingDoc = request.existingDoc;
         const partial = request.partial || false;
 
         const aggregatorsConfig = this.indicesConfig.aggregators && this.indicesConfig.aggregators[typeConfig.type];
         if (!aggregatorsConfig) {
+            return false;
+        }
+
+        if (aggregatorsConfig.filter && _.isFunction(aggregatorsConfig.filter) && !aggregatorsConfig.filter(newDoc, existingDoc, partial)) {
+            newDoc = null;
+        }
+
+        if (!newDoc && !existingDoc) {
             return false;
         }
 
@@ -555,6 +581,7 @@ class IndexerInternal {
     }
 
     add(request) {
+        const operationType = ADD_OP;
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
 
@@ -570,11 +597,11 @@ class IndexerInternal {
         }
 
         if (request.filter && _.isFunction(request.filter) && !request.filter(doc)) {
-            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'SKIP', _operation: 'ADD'};
+            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: FAIL_STATUS, _failCode: SKIP_FAIL_CODE, _operation: operationType};
         }
 
         if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(doc)) {
-            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'SKIP', _operation: 'ADD'};
+            return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: FAIL_STATUS, _failCode: SKIP_FAIL_CODE, _operation: operationType};
         }
 
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
@@ -587,11 +614,11 @@ class IndexerInternal {
           Promise.resolve(_.isUndefined(request.existingDoc) ? this.get({typeConfig, id}) : request.existingDoc)
             .then(existingDoc => {
                 if (existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'EXISTS_ALREADY', _operation: 'ADD'};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: FAIL_STATUS, _failCode: 'EXISTS_ALREADY', _operation: operationType};
                 }
 
-                return this.request({method: 'PUT', uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
-                  .then(response => this.handleResponse(response, {404: true}, 'ADD'))
+                return this.request({method: PUT_HTTP_METHOD, uri: `${typeConfig.index}/${typeConfig.type}/${id}`, body: doc})
+                  .then(response => this.handleResponse(response, {404: true}, operationType))
                   .then(response => {
                       result = response;
 
@@ -604,6 +631,7 @@ class IndexerInternal {
     }
 
     remove(request) {
+        const operationType = REMOVE_OP;
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
 
         const id = request.id;
@@ -618,11 +646,11 @@ class IndexerInternal {
           Promise.resolve(request.doc || this.get({typeConfig, id}))
             .then(existingDoc => {
                 if (!existingDoc) {
-                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: 'FAIL', _failCode: 'NOT_FOUND', _operation: 'REMOVE'};
+                    return {_id: id, _type: typeConfig.type, _index: typeConfig.index, _statusCode: 404, _status: FAIL_STATUS, _failCode: NOT_FOUND_FAIL_CODE, _operation: operationType};
                 }
 
-                return this.request({method: 'DELETE', uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
-                  .then(response => this.handleResponse(response, {404: true}, 'REMOVE'))
+                return this.request({method: DELETE_HTTP_METHOD, uri: `${typeConfig.index}/${typeConfig.type}/${id}`})
+                  .then(response => this.handleResponse(response, {404: true}, operationType))
                   .then(response => {
                       result = response;
 
@@ -635,6 +663,7 @@ class IndexerInternal {
     }
 
     update(request) {
+        const operationType = request.partial ? PARTIAL_UPDATE_OP : UPDATE_OP;
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
 
@@ -666,15 +695,15 @@ class IndexerInternal {
                         _type: typeConfig.type,
                         _index: typeConfig.index,
                         _statusCode: 404,
-                        _status: 'FAIL',
-                        _failCode: 'NOT_FOUND',
-                        _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'
+                        _status: FAIL_STATUS,
+                        _failCode: NOT_FOUND_FAIL_CODE,
+                        _operation: operationType
                     };
                 }
 
-                if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc)) {
+                if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc, request.partial)) {
                     // if it is filtered by type then remove
-                    if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
+                    if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc, request.partial)) {
                         return this.remove({typeConfig, id, doc: existingDoc, lockHandle: request.lockHandle, partial: request.partial});
                     }
 
@@ -684,18 +713,18 @@ class IndexerInternal {
                         _type: typeConfig.type,
                         _index: typeConfig.index,
                         _statusCode: 404,
-                        _status: 'FAIL',
-                        _failCode: 'SKIP',
-                        _operation: request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'
+                        _status: FAIL_STATUS,
+                        _failCode: SKIP_FAIL_CODE,
+                        _operation: operationType
                     };
                 }
 
-                if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc)) {
+                if (typeConfig.filter && _.isFunction(typeConfig.filter) && !typeConfig.filter(newDoc, existingDoc, request.partial)) {
                     return this.remove({typeConfig, id, doc: existingDoc, lockHandle: request.lockHandle, partial: request.partial});
                 }
 
-                return this.request({method: 'POST', uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}})
-                  .then(response => this.handleResponse(response, {404: true}, request.partial ? 'PARTIAL_UPDATE' : 'UPDATE'))
+                return this.request({method: POST_HTTP_METHOD, uri: `${typeConfig.index}/${typeConfig.type}/${id}/_update`, body: {doc: newDoc}})
+                  .then(response => this.handleResponse(response, {404: true}, operationType))
                   .then(response => {
                       result = response;
 
@@ -730,7 +759,7 @@ class IndexerInternal {
             const aggregateOperation = () => {
                 let startTime = null;
 
-                if (this.logLevel === 'trace') {
+                if (this.logLevel === TRACE_LOG_LEVEL) {
                     startTime = performanceNow();
                 }
 
@@ -819,18 +848,18 @@ class IndexerInternal {
                           return true;
                       });
 
-                      if (this.logLevel === 'trace') {
+                      if (this.logLevel === TRACE_LOG_LEVEL) {
                           console.log('Aggregation time: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
                       return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType, id, type: typeConfig.type});
                   })
                   .then(() => {
-                      if (this.logLevel === 'trace') {
+                      if (this.logLevel === TRACE_LOG_LEVEL) {
                           console.log('Finished aggregate upsert: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
-                      return {_statusCode: 200, _status: 'SUCCESS', _id: id, _type: typeConfig.type, _index: typeConfig.index, _operation: 'LAZY_AGGREGATE'};
+                      return {_statusCode: 200, _status: SUCCESS_STATUS, _id: id, _type: typeConfig.type, _index: typeConfig.index, _operation: 'LAZY_AGGREGATE'};
                   });
             };
 
