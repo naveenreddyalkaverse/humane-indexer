@@ -396,6 +396,8 @@ class IndexerInternal {
                             // if it does not exist what to remove ?
                             return true;
                         }
+                    } else {
+                        opType = existingAggregateData.opType || opType;
                     }
 
                     let existingAggregateDoc = null;
