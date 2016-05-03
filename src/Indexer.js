@@ -1,15 +1,11 @@
 import _ from 'lodash';
 import Promise from 'bluebird';
 import Chalk from 'chalk';
-
 import performanceNow from 'performance-now';
-
 import buildRequest from 'humane-node-commons/lib/Request';
 import buildRedisClient from 'humane-node-commons/lib/RedisClient';
-
 import ValidationError from 'humane-node-commons/lib/ValidationError';
 import InternalServiceError from 'humane-node-commons/lib/InternalServiceError';
-
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
 
@@ -42,6 +38,7 @@ const AGGREGATE_MODE = 'aggregate';
 //
 class IndexerInternal {
     constructor(config) {
+        // TODO: get instance name here
         this.logLevel = config.logLevel || INFO_LOG_LEVEL;
 
         this.request = buildRequest(_.extend({}, config.esConfig, {logLevel: this.logLevel, baseUrl: config.esConfig && config.esConfig.url || 'http://localhost:9200'}));
@@ -105,7 +102,12 @@ class IndexerInternal {
         }
 
         if (response.statusCode < 400 || okStatusCodes && okStatusCodes[response.statusCode]) {
-            return _.extend({_statusCode: response.statusCode, _status: response.statusCode < 400 ? SUCCESS_STATUS : FAIL_STATUS, _elapsedTime: response.elapsedTime, _operation: operation}, response.body);
+            return _.extend({
+                _statusCode: response.statusCode,
+                _status: response.statusCode < 400 ? SUCCESS_STATUS : FAIL_STATUS,
+                _elapsedTime: response.elapsedTime,
+                _operation: operation
+            }, response.body);
         }
 
         throw new InternalServiceError('Internal Service Error', {
@@ -152,6 +154,7 @@ class IndexerInternal {
     }
 
     deleteIndex(indexKey) {
+        // todo: prefix instance name if not already
         if (!indexKey) {
             const promises = _(this.indicesConfig.indices)
               .values()
@@ -169,6 +172,7 @@ class IndexerInternal {
     }
 
     createIndex(indexKey) {
+        // todo: prefix instance name if not already
         if (!indexKey) {
             const promises = _(this.indicesConfig.indices)
               .values()
@@ -882,6 +886,61 @@ class IndexerInternal {
 
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
+
+    createLookupDictionary(dictionaryName) {
+        // creates a lucene index for the instanceName:lookup:dictionaryName
+        // schema is pretty much same -- key and any properties
+    }
+
+    deleteLookupDictionary(dictionaryName) {
+        // deletes a lucene index for the instanceName:lookup:dictionaryName
+    }
+
+    addLookup(dictionaryName, key, value) {
+
+    }
+
+    deleteLookup(dictionaryName, key) {
+
+    }
+
+    updateLookup(dictionaryName, key, value, partial) {
+
+    }
+
+    upsertLookup(dictionaryName, key, value) {
+
+    }
+
+    createSynonymDictionary(dictionaryName) {
+
+    }
+
+    deleteSynonymDictionary(dictionaryName) {
+
+    }
+
+    addSynonym(dictionaryName, ...value) {
+        // all value shall belong to same synonym set
+    }
+
+    deleteSynonym(dictionaryName, ...value) {
+        // all value shall belong to same synonym set
+        // if it is the last value, then delete the synonym set too
+    }
+
+    updateSynonym(dictionaryName, oldValue, newValue) {
+        // update old value of synonym to new value
+    }
+
+    // _createTermDictionary(typeName) {
+    //     // creates a lucene index for the instanceName:term:typeName
+    //     // schema is pretty much same -- field, term, various phonetic encodings
+    // }
+    //
+    // _deleteTermDictionary(typeName) {
+    //
+    // }
 }
 
 //
