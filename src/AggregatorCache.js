@@ -11,12 +11,20 @@ class DistributedCache {
     constructor(config) {
         this.instanceName = config.instanceName || 'default';
         this.logLevel = config.logLevel;
+
+        this.redisKeyPrefix = process.env.REDIS_KEY_PREFIX;
+        if (this.redisKeyPrefix) {
+            this.redisKeyPrefix = `${this.redisKeyPrefix}/`;
+        } else {
+            this.redisKeyPrefix = '';
+        }
+        
         this.redisClient = config.redisClient;
         this.keyPrefix = `${this.instanceName}:agg:`;
     }
 
     getKey(key) {
-        return `${this.keyPrefix}${key}`;
+        return `${this.redisKeyPrefix}${this.keyPrefix}${key}`;
     }
 
     store(key, data) {

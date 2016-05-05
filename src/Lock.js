@@ -11,6 +11,13 @@ class DistributedLock {
     constructor(config) {
         this.logLevel = config.logLevel;
 
+        this.redisKeyPrefix = process.env.REDIS_KEY_PREFIX;
+        if (this.redisKeyPrefix) {
+            this.redisKeyPrefix = `${this.redisKeyPrefix}/`;
+        } else {
+            this.redisKeyPrefix = '';
+        }
+
         this.redisClient = config.redisClient;
         const locksConfig = config.locksConfig;
         RedisLock.setDefaults({
@@ -21,6 +28,8 @@ class DistributedLock {
     }
 
     acquire(key) {
+        key = this.redisKeyPrefix + key;
+        
         let acquireStartTime = null;
         if (this.logLevel === 'trace') {
             acquireStartTime = performanceNow();
