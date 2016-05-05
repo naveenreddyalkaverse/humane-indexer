@@ -236,7 +236,7 @@ class IndexerInternal {
     getMapping(mapping) {
         if (_.isString(mapping)) {
             return MappingTypes[mapping];
-        } else if (_.isObject(mapping) && mapping.properties && mapping.type === 'nested') {
+        } else if (_.isObject(mapping) && mapping.properties) {
             mapping.properties = _.mapValues(mapping.properties, property => this.getMapping(property));
             return mapping;
         }
