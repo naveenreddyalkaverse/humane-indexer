@@ -673,9 +673,9 @@ class IndexerInternal {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
 
-        const doc = request.doc;
+        let doc = request.doc;
         if (transform && _.isFunction(transform)) {
-            transform(doc);
+            doc = transform(doc) || doc;
         }
 
         const id = request.id || typeConfig.id(doc);
@@ -759,9 +759,9 @@ class IndexerInternal {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
 
-        const newDoc = request.doc;
+        let newDoc = request.doc;
         if (transform && _.isFunction(transform)) {
-            transform(newDoc);
+            newDoc = transform(newDoc) || newDoc;
         }
 
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
