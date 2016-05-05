@@ -8,6 +8,9 @@ import ValidationError from 'humane-node-commons/lib/ValidationError';
 import InternalServiceError from 'humane-node-commons/lib/InternalServiceError';
 import Lock from './Lock';
 import AggregatorCache from './AggregatorCache';
+import AnalysisSetting from './schemas/analysis_setting';
+import * as MappingTypes from './schemas/mapping_types';
+import SearchQueryMapping from './schemas/search_query_mapping';
 
 const GET_OP = 'GET';
 const ADD_OP = 'ADD';
@@ -38,8 +41,8 @@ const AGGREGATE_MODE = 'aggregate';
 //
 class IndexerInternal {
     constructor(config) {
-        // TODO: get instance name here
         this.logLevel = config.logLevel || INFO_LOG_LEVEL;
+        this.instanceName = config.instanceName;
 
         this.request = buildRequest(_.extend({}, config.esConfig, {logLevel: this.logLevel, baseUrl: config.esConfig && config.esConfig.url || 'http://localhost:9200'}));
 
@@ -51,8 +54,68 @@ class IndexerInternal {
 
         this.aggregatorCache = new AggregatorCache({logLevel: this.logLevel, cacheConfig: config.cacheConfig, redisClient: this.redisClient, instanceName: config.instanceName}, this, this.lock);
 
+        const DefaultTypes = {
+            searchQuery: {
+                mapping: SearchQueryMapping,
+                id: (doc) => doc.key,
+                mode: 'aggregate',
+                aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults}),
+                measures: [
+                    {count: 'COUNT'},
+                    {weight: (doc) => doc.count}
+                ]
+            }
+        };
+
         // TODO: validate indices config are proper
-        this.indicesConfig = config.indicesConfig;
+        this.indicesConfig = _.defaultsDeep(config.indicesConfig, {
+            types: DefaultTypes
+        });
+
+        if (!this.indicesConfig.indices) {
+            this.indicesConfig.indices = {};
+        }
+
+        const indices = this.indicesConfig.indices;
+
+        _.forEach(this.indicesConfig.types, (type, key) => {
+            if (!type.type) {
+                type.type = key;
+            }
+
+            if (!type.index) {
+                let index = indices[type.type];
+                if (!index) {
+                    // we build index
+                    indices[type.type] = index = {
+                        store: `${_.toLower(this.instanceName)}:${_.snakeCase(type.type)}_store`,
+                        analysis: AnalysisSetting
+                    };
+                }
+
+                type.index = index.store;
+            }
+
+            if (!type.weight) {
+                type.weight = () => 1.0;
+            }
+
+            if (!type.id) {
+                type.id = (doc) => doc.id;
+            }
+
+            if (type.mapping && !type.mapping._weight) {
+                type.mapping._weight = '$Double';
+            }
+
+            if (type.mapping && !type.mapping._lang) {
+                type.mapping._lang = '$Keyword';
+            }
+            
+            if (!type.lang) {
+                type.lang = () => 'en';
+            }
+        });
     }
 
     shutdown() {
@@ -154,7 +217,6 @@ class IndexerInternal {
     }
 
     deleteIndex(indexKey) {
-        // todo: prefix instance name if not already
         if (!indexKey) {
             const promises = _(this.indicesConfig.indices)
               .values()
@@ -171,8 +233,18 @@ class IndexerInternal {
           .then(response => this.handleResponse(response, {404: true}, 'DELETE_INDEX'));
     }
 
+    getMapping(mapping) {
+        if (_.isString(mapping)) {
+            return MappingTypes[mapping];
+        } else if (_.isObject(mapping) && mapping.properties && mapping.type === 'nested') {
+            mapping.properties = _.mapValues(mapping.properties, property => this.getMapping(property));
+            return mapping;
+        }
+        
+        return mapping;
+    }
+
     createIndex(indexKey) {
-        // todo: prefix instance name if not already
         if (!indexKey) {
             const promises = _(this.indicesConfig.indices)
               .values()
@@ -183,7 +255,12 @@ class IndexerInternal {
                     .values()
                     .filter(type => type.index === indexConfig.store)
                     .forEach(type => {
-                        mappings[type.type] = type.mapping;
+                        mappings[type.type] = {
+                            _all: {
+                                enabled: false
+                            },
+                            properties: _.mapValues(type.mapping, property => this.getMapping(property))
+                        };
                     });
 
                   return this.request({
@@ -206,7 +283,12 @@ class IndexerInternal {
           .values()
           .filter(type => type.index === indexConfig.store)
           .forEach(type => {
-              mappings[type.type] = type.mapping;
+              mappings[type.type] = {
+                  _all: {
+                      enabled: false
+                  },
+                  properties: _.mapValues(type.mapping, property => this.getMapping(property))
+              };
           });
 
         return this.request({method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
@@ -611,7 +693,11 @@ class IndexerInternal {
         }
 
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
-            doc.weight = _.round(Math.log1p(typeConfig.weight(doc)), 3);
+            doc._weight = _.round(Math.log1p(typeConfig.weight(doc)), 3);
+        }
+        
+        if (typeConfig.lang && _.isFunction(typeConfig.lang)) {
+            doc._lang = typeConfig.lang(doc);
         }
 
         let result = null;
@@ -679,7 +765,11 @@ class IndexerInternal {
         }
 
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
-            newDoc.weight = _.round(Math.log1p(typeConfig.weight(newDoc)), 3);
+            newDoc._weight = _.round(Math.log1p(typeConfig.weight(newDoc)), 3);
+        }
+
+        if (typeConfig.lang && _.isFunction(typeConfig.lang)) {
+            newDoc._lang = typeConfig.lang(newDoc);
         }
 
         const id = request.id || typeConfig.id(newDoc);
