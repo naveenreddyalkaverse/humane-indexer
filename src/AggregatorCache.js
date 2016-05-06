@@ -20,11 +20,11 @@ class DistributedCache {
         }
         
         this.redisClient = config.redisClient;
-        this.keyPrefix = `${this.instanceName}:agg:`;
+        this.keyPrefix = `${this.redisKeyPrefix}${this.instanceName}:agg:`;
     }
 
     getKey(key) {
-        return `${this.redisKeyPrefix}${this.keyPrefix}${key}`;
+        return `${this.keyPrefix}${key}`;
     }
 
     store(key, data) {
@@ -146,6 +146,9 @@ export default class Cache {
         this.eventEmitter = new EventEmitter();
 
         this._flushing = false;
+
+        // when we start, we schedule a flush
+        this.scheduleFlush();
     }
 
     store(key, data) {
