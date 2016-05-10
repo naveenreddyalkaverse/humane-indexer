@@ -91,6 +91,12 @@ class IndexerInternal {
                         store: `${_.toLower(this.instanceName)}:${_.snakeCase(type.type)}_store`,
                         analysis: AnalysisSetting
                     };
+
+                    if (type.type === 'searchQuery') {
+                        index.indexSettings = {
+                            did_you_mean_enabled: false
+                        };
+                    }
                 }
 
                 type.index = index.store;
@@ -111,7 +117,7 @@ class IndexerInternal {
             if (type.mapping && !type.mapping._lang) {
                 type.mapping._lang = '$Keyword';
             }
-            
+
             if (!type.lang) {
                 type.lang = () => 'en';
             }
@@ -240,7 +246,7 @@ class IndexerInternal {
             mapping.properties = _.mapValues(mapping.properties, property => this.getMapping(property));
             return mapping;
         }
-        
+
         return mapping;
     }
 
@@ -266,7 +272,17 @@ class IndexerInternal {
                   return this.request({
                       method: PUT_HTTP_METHOD,
                       uri: `${indexConfig.store}`,
-                      body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}
+                      body: {
+                          settings: {
+                              index: _.defaultsDeep(indexConfig.indexSettings, {
+                                  number_of_shards: 3,
+                                  did_you_mean_enabled: true,
+                                  did_you_mean_index_name: `${_.toLower(this.instanceName)}:did_you_mean_store`
+                              }),
+                              analysis: indexConfig.analysis
+                          },
+                          mappings
+                      }
                   });
               })
               .value();
@@ -291,7 +307,19 @@ class IndexerInternal {
               };
           });
 
-        return this.request({method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {settings: {number_of_shards: 3, analysis: indexConfig.analysis}, mappings}})
+        return this.request({
+              method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {
+                  settings: {
+                      index: _.defaultsDeep(indexConfig.indexSettings, {
+                          number_of_shards: 3,
+                          did_you_mean_enabled: true,
+                          did_you_mean_index_name: null
+                      }),
+                      analysis: indexConfig.analysis
+                  },
+                  mappings
+              }
+          })
           .then(response => this.handleResponse(response, {404: true}, 'CREATE_INDEX'));
     }
 
@@ -695,7 +723,7 @@ class IndexerInternal {
         if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
             doc._weight = _.round(Math.log1p(typeConfig.weight(doc)), 3);
         }
-        
+
         if (typeConfig.lang && _.isFunction(typeConfig.lang)) {
             doc._lang = typeConfig.lang(doc);
         }

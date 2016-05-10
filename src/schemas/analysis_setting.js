@@ -2,6 +2,7 @@
 const _ = require('lodash');
 
 const $LowercaseFilter = {name: 'lowercase'};
+const $StopFilter = {name: 'stop'};
 const $StandardTokenizer = {name: 'standard'};
 const $KeywordTokenizer = {name: 'keyword'};
 const $WhitespaceTokenizer = {name: 'whitespace'};
@@ -57,6 +58,25 @@ const $HumaneEdgeGramFilter = {
         type: 'humane_edgeGram',
         min_gram: 2,
         max_gram: 20,
+        // payload: false,
+        // prefix: 'e#',
+        token_chars: [
+            'letter',
+            'digit',
+            'punctuation',
+            'symbol'
+        ]
+    }
+};
+
+const $HumaneEdgeGramWithPayloadFilter = {
+    name: 'humane_edgeGram_with_payload_filter',
+    value: {
+        type: 'humane_edgeGram',
+        min_gram: 2,
+        max_gram: 20,
+        payload: true,
+        prefix: '',
         token_chars: [
             'letter',
             'digit',
@@ -206,8 +226,12 @@ export default {
         // phonetic_dm_trigram_shingles_index_analyzer: standardAnalyzer($LowercaseFilter, $DoubleMetaphoneFilter, $TrigramShingleFilter),
         // phonetic_edgeGram_dm_index_analyzer: standardAnalyzer($LowercaseFilter, $PhoneticEdgeGramFilter, $DoubleMetaphoneFilter),
         // phonetic_dm_search_analyzer: standardAnalyzer($LowercaseFilter, $DoubleMetaphoneFilter),
+
+        humane_did_you_mean_builder_analyzer: standardAnalyzer($LowercaseFilter, $StopFilter/*, $HumaneEdgeGramWithPayloadFilter*/),
         
-        humane_analyzer: standardAnalyzer($LowercaseFilter, $HumaneEdgeGramFilter, $HumaneTokenFilter),
+        humane_analyzer: standardAnalyzer($LowercaseFilter, $HumaneEdgeGramFilter, $HumaneTokenFilter), // TODO: later it would be removed
+
+        // TODO: generate bigrams... mixed with edgeGram
         
         // humane_edgeGram_analyzer: standardAnalyzer($LowercaseFilter, $HumaneEdgeGramFilter, $HumaneTokenFilter),
         
@@ -222,7 +246,6 @@ export default {
         phonetic_dm_edgeGram_search_analyzer: standardAnalyzer($LowercaseFilter, $DoubleMetaphoneFilter, $EdgeGramPrefixTokenFilter, $DMPrefixTokenFilter),
         phonetic_refined_soundex_edgeGram_search_analyzer: standardAnalyzer($LowercaseFilter, $RefinedSoundexFilter, $EdgeGramPrefixTokenFilter, $RefinedSoundexPrefixTokenFilter),
         phonetic_dm_soundex_edgeGram_search_analyzer: standardAnalyzer($LowercaseFilter, $DMSoundexFilter, $EdgeGramPrefixTokenFilter, $DMSoundexPrefixTokenFilter)
-
     },
     filter: {
         // [$NGramFilter.name]: $NGramFilter.value,
@@ -240,6 +263,7 @@ export default {
         [$DMPrefixTokenFilter.name]: $DMPrefixTokenFilter.value,
 
         [$HumaneEdgeGramFilter.name]: $HumaneEdgeGramFilter.value,
+        [$HumaneEdgeGramWithPayloadFilter.name]: $HumaneEdgeGramWithPayloadFilter.value,
         
         // [$BigramShingleFilter.name]: $BigramShingleFilter.value,
         // [$TrigramShingleFilter.name]: $TrigramShingleFilter.value,
