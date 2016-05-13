@@ -1,12 +1,12 @@
 // jscs:disable requireCamelCaseOrUpperCaseIdentifiers
 export const $Keyword = {
     type: 'string',
-    analyzer: 'keyword_analyzer'
+    analyzer: 'humane_keyword_analyzer'
 };
 
 export const $VernacularKeyword = {
     type: 'string',
-    analyzer: 'keyword_analyzer'
+    analyzer: 'humane_keyword_analyzer'
 };
 
 export const $Long = {
@@ -57,132 +57,29 @@ export const $IdentityText = {
 
 export const $Text = {
     type: 'string',
-    analyzer: 'standard_index_analyzer',
-    search_analyzer: 'standard_search_analyzer',
+    analyzer: 'humane_standard_analyzer',
     fields: {
         raw: $Keyword,
 
         humane: {
             type: 'string',
-            analyzer: 'humane_analyzer',
-            search_analyzer: 'standard_search_analyzer'
+            analyzer: 'humane_text_analyzer'
+        },
+        shingle: {
+            type: 'string',
+            analyzer: 'humane_shingle_text_analyzer'
         }
-
-        // humane_edgeGram: {
-        //     type: 'string',
-        //     analyzer: 'humane_edgeGram_analyzer',
-        //     search_analyzer: 'standard_search_analyzer'
-        // }
-
-        // edgeGram: {
-        //     type: 'string',
-        //     analyzer: 'edgeGram_index_analyzer',
-        //     search_analyzer: 'standard_search_analyzer'
-        // },
-        // nGram: {
-        //     type: 'string',
-        //     analyzer: 'nGram_index_analyzer',
-        //     search_analyzer: 'standard_search_analyzer'
-        // },
-        // phonetic_bm: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_bm_index_analyzer',
-        //     search_analyzer: 'phonetic_bm_search_analyzer'
-        // },
-        // phonetic_edgeGram_bm: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_edgeGram_bm_index_analyzer',
-        //     search_analyzer: 'phonetic_bm_search_analyzer'
-        // },
-        // phonetic_soundex: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_soundex_index_analyzer',
-        //     search_analyzer: 'phonetic_soundex_search_analyzer'
-        // },
-        // phonetic_edgeGram_soundex: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_edgeGram_soundex_index_analyzer',
-        //     search_analyzer: 'phonetic_soundex_search_analyzer'
-        // },
-        // phonetic_dm: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_dm_index_analyzer',
-        //     search_analyzer: 'phonetic_dm_search_analyzer'
-        // },
-        // phonetic_edgeGram_dm: {
-        //     type: 'string',
-        //     analyzer: 'phonetic_edgeGram_dm_index_analyzer',
-        //     search_analyzer: 'phonetic_dm_search_analyzer'
-        // },
-        //
-        // // bi-gram shingles
-        // bigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_bigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_bigram_shingles_index_analyzer'
-        // },
-        //
-        // // tri-gram shingles
-        // trigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_trigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_trigram_shingles_index_analyzer'
-        // },
-        //
-        // // bi-gram shingles for soundex
-        // phonetic_soundex_bigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_bigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_bigram_shingles_index_analyzer'
-        // },
-        //
-        // // bi-gram shingles for bm
-        // phonetic_bm_bigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_bigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_bigram_shingles_index_analyzer'
-        // },
-        //
-        // // bi-gram shingles for dm
-        // phonetic_dm_bigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_bigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_bigram_shingles_index_analyzer'
-        // },
-        //
-        // // tri-gram shingles for soundex
-        // phonetic_soundex_trigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_trigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_trigram_shingles_index_analyzer'
-        // },
-        //
-        // // tri-gram shingles for bm
-        // phonetic_bm_trigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_trigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_trigram_shingles_index_analyzer'
-        // },
-        //
-        // // tri-gram shingles for dm
-        // phonetic_dm_trigram_shingles: {
-        //     type: 'string',
-        //     analyzer: 'standard_trigram_shingles_index_analyzer',
-        //     search_analyzer: 'standard_trigram_shingles_index_analyzer'
-        // }
     }
 };
 
 export const $VernacularText = {
     type: 'string',
-    analyzer: 'standard_index_analyzer',
-    search_analyzer: 'standard_search_analyzer',
+    analyzer: 'humane_standard_analyzer',
     fields: {
         raw: $Keyword,
-        edgeGram: {
+        vernacular: {
             type: 'string',
-            analyzer: 'edgeGram_index_analyzer',
-            search_analyzer: 'standard_search_analyzer'
+            analyzer: 'humane_vernacular_analyzer'
         }
     }
 };
