@@ -5,6 +5,8 @@ import {EventEmitter} from 'events';
 
 import performanceNow from 'performance-now';
 
+/* eslint-disable no-underscore-dangle */
+
 const FlushSchedulerKey = 'aggregate-flusher';
 
 class DistributedCache {

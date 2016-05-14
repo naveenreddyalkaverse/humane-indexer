@@ -12,6 +12,8 @@ import AnalysisSetting from './schemas/analysis_setting';
 import * as MappingTypes from './schemas/mapping_types';
 import SearchQueryMapping from './schemas/search_query_mapping';
 
+/* eslint-disable no-underscore-dangle */
+
 const GET_OP = 'GET';
 const ADD_OP = 'ADD';
 const REMOVE_OP = 'REMOVE';
