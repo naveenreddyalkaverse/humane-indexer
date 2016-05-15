@@ -88,9 +88,16 @@ class IndexerInternal {
             if (!type.index) {
                 let index = indices[type.type];
                 if (!index) {
+                    let indexStore = null;
+                    if (type.type === 'searchQuery') {
+                        indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.type)}_store`;
+                    } else {
+                        indexStore = `${_.toLower(this.instanceName)}_store`;
+                    }
+                    
                     // we build index
-                    indices[type.type] = index = {
-                        store: `${_.toLower(this.instanceName)}:${_.snakeCase(type.type)}_store`,
+                    indices[indexStore] = index = {
+                        store: indexStore,
                         analysis: AnalysisSetting
                     };
 
