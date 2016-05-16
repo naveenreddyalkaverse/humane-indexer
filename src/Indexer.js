@@ -87,31 +87,29 @@ class IndexerInternal {
                 type.type = key;
             }
 
-            if (!type.index) {
-                let index = indices[type.type];
-                if (!index) {
-                    let indexStore = null;
-                    if (type.index) {
-                        indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
-                    } else {
-                        indexStore = `${_.toLower(this.instanceName)}_store`;
-                    }
-
-                    // we build index
-                    indices[indexStore] = index = {
-                        store: indexStore,
-                        analysis: AnalysisSetting
-                    };
-
-                    if (!_.isUndefined(type.did_you_mean_enabled)) {
-                        index.indexSettings = {
-                            did_you_mean_enabled: type.did_you_mean_enabled
-                        };
-                    }
+            let index = indices[type.type];
+            if (!index) {
+                let indexStore = null;
+                if (type.index) {
+                    indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
+                } else {
+                    indexStore = `${_.toLower(this.instanceName)}_store`;
                 }
 
-                type.index = index.store;
+                // we build index
+                indices[indexStore] = index = {
+                    store: indexStore,
+                    analysis: AnalysisSetting
+                };
+
+                if (!_.isUndefined(type.did_you_mean_enabled)) {
+                    index.indexSettings = {
+                        did_you_mean_enabled: type.did_you_mean_enabled
+                    };
+                }
             }
+
+            type.index = index.store;
 
             if (!type.weight) {
                 type.weight = () => 1.0;
