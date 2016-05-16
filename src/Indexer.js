@@ -58,6 +58,8 @@ class IndexerInternal {
 
         const DefaultTypes = {
             searchQuery: {
+                index: 'search_query',
+                did_you_mean_enabled: false,
                 mapping: SearchQueryMapping,
                 id: (doc) => doc.key,
                 mode: 'aggregate',
@@ -89,21 +91,21 @@ class IndexerInternal {
                 let index = indices[type.type];
                 if (!index) {
                     let indexStore = null;
-                    if (type.type === 'searchQuery') {
-                        indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.type)}_store`;
+                    if (type.index) {
+                        indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
                     } else {
                         indexStore = `${_.toLower(this.instanceName)}_store`;
                     }
-                    
+
                     // we build index
                     indices[indexStore] = index = {
                         store: indexStore,
                         analysis: AnalysisSetting
                     };
 
-                    if (type.type === 'searchQuery') {
+                    if (!_.isUndefined(type.did_you_mean_enabled)) {
                         index.indexSettings = {
-                            did_you_mean_enabled: false
+                            did_you_mean_enabled: type.did_you_mean_enabled
                         };
                     }
                 }
@@ -284,7 +286,7 @@ class IndexerInternal {
                       body: {
                           settings: {
                               index: _.defaultsDeep(indexConfig.indexSettings, {
-                                  number_of_shards: 3,
+                                  number_of_shards: 2,
                                   did_you_mean_enabled: true,
                                   did_you_mean_index_name: `${_.toLower(this.instanceName)}:did_you_mean_store`
                               }),
@@ -317,18 +319,18 @@ class IndexerInternal {
           });
 
         return this.request({
-              method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {
-                  settings: {
-                      index: _.defaultsDeep(indexConfig.indexSettings, {
-                          number_of_shards: 3,
-                          did_you_mean_enabled: true,
-                          did_you_mean_index_name: null
-                      }),
-                      analysis: indexConfig.analysis
-                  },
-                  mappings
-              }
-          })
+            method: PUT_HTTP_METHOD, uri: `${indexConfig.store}`, body: {
+                settings: {
+                    index: _.defaultsDeep(indexConfig.indexSettings, {
+                        number_of_shards: 2,
+                        did_you_mean_enabled: true,
+                        did_you_mean_index_name: null
+                    }),
+                    analysis: indexConfig.analysis
+                },
+                mappings
+            }
+        })
           .then(response => this.handleResponse(response, {404: true}, 'CREATE_INDEX'));
     }
 
