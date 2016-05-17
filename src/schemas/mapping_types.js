@@ -9,6 +9,26 @@ export const $VernacularKeyword = {
     analyzer: 'humane_keyword_analyzer'
 };
 
+export const $Integer = {
+    type: 'integer'
+};
+
+export const $NotIndexedInteger = {
+    type: 'integer',
+    index: 'no',
+    include_in_all: false
+};
+
+export const $Short = {
+    type: 'short'
+};
+
+export const $NotIndexedShort = {
+    type: 'short',
+    index: 'no',
+    include_in_all: false
+};
+
 export const $Long = {
     type: 'long'
 };
@@ -41,7 +61,7 @@ export const $NotIndexedBoolean = {
 
 export const $Date = {
     type: 'date',
-    format: 'yyyy-MM-dd HH:mm:ss||epoch_millis'
+    format: 'yyyy-MM-dd HH:mm:ss||epoch_millis||yyyy-MM-dd\'T\'HH:mm:ss.SSS\'Z\''
 };
 
 export const $NotIndexedText = {
@@ -82,4 +102,8 @@ export const $VernacularText = {
             analyzer: 'humane_vernacular_analyzer'
         }
     }
+};
+
+export const $Geo = {
+    type: 'geo_point'
 };
