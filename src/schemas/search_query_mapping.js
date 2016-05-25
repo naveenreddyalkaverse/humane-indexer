@@ -4,6 +4,6 @@ export default {
     query: '$Text',
     unicodeQuery: '$VernacularText',
     count: '$Long',
-    weight: '$Double',
+    // weight: '$Double',
     hasResults: '$Boolean'
 };

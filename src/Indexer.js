@@ -2,6 +2,7 @@ import _ from 'lodash';
 import Promise from 'bluebird';
 import Chalk from 'chalk';
 import performanceNow from 'performance-now';
+import moment from 'moment';
 import buildRequest from 'humane-node-commons/lib/Request';
 import buildRedisClient from 'humane-node-commons/lib/RedisClient';
 import ValidationError from 'humane-node-commons/lib/ValidationError';
@@ -11,8 +12,6 @@ import AggregatorCache from './AggregatorCache';
 import AnalysisSetting from './schemas/analysis_setting';
 import * as MappingTypes from './schemas/mapping_types';
 import SearchQueryMapping from './schemas/search_query_mapping';
-
-/* eslint-disable no-underscore-dangle */
 
 const GET_OP = 'GET';
 const ADD_OP = 'ADD';
@@ -38,6 +37,30 @@ const HEAD_HTTP_METHOD = 'HEAD';
 
 const AGGREGATE_MODE = 'aggregate';
 
+const StatsMapping = {
+    type: 'nested',
+    properties: {
+        name: '$Keyword',
+        lastNValues: '$Long',
+        value: '$Long',
+        timeInUnit: '$Long',
+        lastUpdateTime: '$Date'
+    }
+};
+
+const OverallStatsMapping = {
+    type: 'nested',
+    properties: {
+        name: '$Keyword',
+        value: '$Long',
+        lastUpdateTime: '$Date'
+    }
+};
+
+const LangMapping = '$Keyword';
+
+const WeightMapping = '$Double';
+
 //
 // Actual implementation is in Internal class for API class to look readable and simple.
 //
@@ -62,11 +85,11 @@ class IndexerInternal {
                 did_you_mean_enabled: false,
                 mapping: SearchQueryMapping,
                 id: (doc) => doc.key,
+                weight: (doc) => doc.count,
                 mode: 'aggregate',
                 aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults}),
                 measures: [
-                    {count: 'COUNT'},
-                    {weight: (doc) => doc.count}
+                    {count: 'COUNT'}
                 ]
             }
         };
@@ -119,12 +142,29 @@ class IndexerInternal {
                 type.id = (doc) => doc.id;
             }
 
+            // TODO: ideally these stats can reside in another DB
+            if (type.mapping && !type.mapping._dailyStats) {
+                type.mapping._dailyStats = StatsMapping;
+            }
+
+            if (type.mapping && !type.mapping._weeklyStats) {
+                type.mapping._weeklyStats = StatsMapping;
+            }
+
+            if (type.mapping && !type.mapping._monthlyStats) {
+                type.mapping._monthlyStats = StatsMapping;
+            }
+
+            if (type.mapping && !type.mapping._overallStats) {
+                type.mapping._overallStats = OverallStatsMapping;
+            }
+
             if (type.mapping && !type.mapping._weight) {
-                type.mapping._weight = '$Double';
+                type.mapping._weight = WeightMapping;
             }
 
             if (type.mapping && !type.mapping._lang) {
-                type.mapping._lang = '$Keyword';
+                type.mapping._lang = LangMapping;
             }
 
             if (!type.lang) {
@@ -365,7 +405,7 @@ class IndexerInternal {
           });
     }
 
-    optimisedGet(request, measures) {
+    getFields(request, fields) {
         let startTime = null;
 
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
@@ -374,6 +414,35 @@ class IndexerInternal {
             throw new ValidationError('No ID has been specified', {details: {code: 'UNDEFINED_ID'}});
         }
 
+        const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
+
+        if (this.logLevel === TRACE_LOG_LEVEL) {
+            startTime = performanceNow();
+        }
+
+        return this.request({method: GET_HTTP_METHOD, uri, qs: {fields: _.join(fields, ',')}})
+          .then(response => {
+              let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
+
+              result = !!result ? result.fields : null;
+
+              if (result) {
+                  _.forEach(fields, field => {
+                      if (result[field] && _.isArray(result[field])) {
+                          result[field] = result[field][0];
+                      }
+                  });
+              }
+
+              if (this.logLevel === TRACE_LOG_LEVEL) {
+                  console.log('optimisedGet: ', uri, (performanceNow() - startTime).toFixed(3));
+              }
+
+              return result;
+          });
+    }
+
+    optimisedGet(request, measures) {
         const fields = [];
 
         _.forEach(measures, measureConfig => {
@@ -407,32 +476,7 @@ class IndexerInternal {
             return true;
         });
 
-        const uri = `${typeConfig.index}/${typeConfig.type}/${request.id}`;
-
-        if (this.logLevel === TRACE_LOG_LEVEL) {
-            startTime = performanceNow();
-        }
-
-        return this.request({method: GET_HTTP_METHOD, uri, qs: {fields: _.join(fields, ',')}})
-          .then(response => {
-              let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
-
-              result = !!result ? result.fields : null;
-
-              if (result) {
-                  _.forEach(fields, field => {
-                      if (result[field] && _.isArray(result[field])) {
-                          result[field] = result[field][0];
-                      }
-                  });
-              }
-
-              if (this.logLevel === TRACE_LOG_LEVEL) {
-                  console.log('optimisedGet: ', uri, (performanceNow() - startTime).toFixed(3));
-              }
-
-              return result;
-          });
+        return this.getFields(request, fields);
     }
 
     buildAggregates(request) {
@@ -456,7 +500,7 @@ class IndexerInternal {
 
         const promises = [];
 
-        const buildAggregates = (aggregateConfig, doc) => {
+        const buildAggregatesInternal = (aggregateConfig, doc) => {
             const aggregates = [];
 
             if (!doc) {
@@ -628,8 +672,8 @@ class IndexerInternal {
         _(aggregatorsConfig.aggregates)
           .values()
           .forEach((aggregateConfig) => {
-              const newDocAggregates = buildAggregates(aggregateConfig, newDoc);
-              const existingDocAggregates = buildAggregates(aggregateConfig, existingDoc);
+              const newDocAggregates = buildAggregatesInternal(aggregateConfig, newDoc);
+              const existingDocAggregates = buildAggregatesInternal(aggregateConfig, existingDoc);
 
               const aggregatesToAdd = []; // if in newDoc, but not in existingDoc
               const aggregatesToRemove = []; // if not in newDoc, but in existingDoc
@@ -677,6 +721,51 @@ class IndexerInternal {
               _.forEach(aggregatesToAdd, aggregateData => buildMeasures(aggregateData, aggregateConfig, ADD_OP));
               _.forEach(aggregatesToRemove, aggregateData => buildMeasures(aggregateData, aggregateConfig, REMOVE_OP));
               _.forEach(aggregatesToUpdate, aggregateData => buildMeasures(aggregateData, aggregateConfig, UPDATE_OP));
+
+              // aggregate signals in newDocAggregates
+              if (request.signal) {
+                  _.forEach(newDocAggregates, aggregateData => {
+                      const id = aggregateData.id;
+                      const aggregate = aggregateData.aggregate;
+
+                      const aggregateIndexConfig = aggregateConfig.indexType;
+                      const aggregateIndexType = aggregateIndexConfig.type;
+
+                      const key = `${aggregateIndexType}:${id}`;
+
+                      // const measuresConfig = aggregateConfig.measures || aggregatorsConfig.measures;
+
+                      const operation = () =>
+                        Promise.resolve(this.aggregatorCache.retrieve(key))
+                          .then(cachedAggregateData => {
+                              if (!cachedAggregateData) {
+                                  return this.getFields({typeConfig: aggregateIndexConfig, id}, ['_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats'])
+                                    .then(result => (result && {doc: result, UPDATE_OP, id, type: aggregateIndexType} || null));
+                              }
+
+                              return cachedAggregateData;
+                          })
+                          .then(existingAggregateData => {
+                              if (!existingAggregateData || !existingAggregateData.doc) {
+                                  // it's actually an error
+                                  console.error('No existing aggregate data for key: ', key);
+                                  return true;
+                              }
+
+                              const existingAggregateDoc = existingAggregateData.doc;
+                              const newAggregateDoc = _.extend({}, existingAggregateDoc, aggregate);
+
+                              // aggregate signal here
+                              this._aggregateSignals(newAggregateDoc, request.signal);
+
+                              return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, UPDATE_OP, id, type: aggregateIndexType});
+                          });
+
+                      const promise = this.lock.usingLock(operation, key);
+
+                      promises.push(promise);
+                  });
+              }
           });
 
         return Promise.all(promises).then((responses) => _.every(responses, response => !!response));
@@ -796,17 +885,11 @@ class IndexerInternal {
         const typeConfig = this.typeConfig(request.typeConfig || request.type);
         const transform = typeConfig.transform;
 
+        // TODO: transform may not well behave for partial document
+        // TODO: who defines undefined state for transform
         let newDoc = request.doc;
         if (transform && _.isFunction(transform)) {
             newDoc = transform(newDoc) || newDoc;
-        }
-
-        if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
-            newDoc._weight = _.round(Math.log1p(typeConfig.weight(newDoc)), 3);
-        }
-
-        if (typeConfig.lang && _.isFunction(typeConfig.lang)) {
-            newDoc._lang = typeConfig.lang(newDoc);
         }
 
         const id = request.id || typeConfig.id(newDoc);
@@ -832,6 +915,26 @@ class IndexerInternal {
                         _failCode: NOT_FOUND_FAIL_CODE,
                         _operation: operationType
                     };
+                }
+
+                // the merge strategy in case of partial v/s full
+                // when it is partial only the values defined in newDoc gets merged - primitive values v/s object values v/s array values... it's all or none
+                // in case of full update, for any value not defined in newDoc - need to be explicitly marked null
+                if (!request.partial) {
+                    _.forOwn(existingDoc, (value, key) => {
+                        if (!newDoc[key]) {
+                            newDoc[key] = null;
+                        }
+                    });
+                }
+
+                const mergedDoc = _.defaults({}, newDoc, existingDoc);
+                if (typeConfig.weight && _.isFunction(typeConfig.weight)) {
+                    newDoc._weight = _.round(Math.log1p(typeConfig.weight(mergedDoc)), 3);
+                }
+
+                if (typeConfig.lang && _.isFunction(typeConfig.lang)) {
+                    newDoc._lang = typeConfig.lang(mergedDoc);
                 }
 
                 if (request.filter && _.isFunction(request.filter) && !request.filter(newDoc, existingDoc, request.partial)) {
@@ -861,7 +964,7 @@ class IndexerInternal {
                   .then(response => {
                       result = response;
 
-                      return this.buildAggregates({typeConfig, newDoc, existingDoc, partial: request.partial});
+                      return this.buildAggregates({typeConfig, newDoc, existingDoc, partial: request.partial, signal: request.signal});
                   })
                   .then(() => _.pick(result, ['_id', '_type', '_index', '_version', '_statusCode', '_status', '_operation']));
             });
@@ -869,8 +972,232 @@ class IndexerInternal {
         return this.lock.usingLock(operation, `${typeConfig.type}:${id}`, request.lockHandle, timeTaken => console.log(Chalk.green(`Updated ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
-    partialUpdate(request) {
-        return this.update(_.extend(request, {partial: true}));
+    _dayToMonth(valueOrMoment) {
+        if (!moment.isMoment(valueOrMoment)) {
+            valueOrMoment = moment(valueOrMoment, 'YYYYMMDD');
+        }
+
+        return Number.parseInt(valueOrMoment.format('YYYYMM'), 10);
+    }
+
+    _dayToWeek(valueOrMoment) {
+        if (!moment.isMoment(valueOrMoment)) {
+            valueOrMoment = moment(valueOrMoment, 'YYYYMMDD');
+        }
+
+        return Number.parseInt(valueOrMoment.format('YYYYMMWW'), 10);
+    }
+
+    _timestampToDay(valueOrMoment) {
+        if (!moment.isMoment(valueOrMoment)) {
+            valueOrMoment = moment(valueOrMoment);
+        }
+
+        return Number.parseInt(valueOrMoment.format('YYYYMMDD'), 10);
+    }
+
+    _lastNPeriods(valueAsMoment, periodUnit, format, num) {
+        valueAsMoment = moment(valueAsMoment);
+
+        const periods = [];
+        for (let i = 0; i < num; i++) {
+            const period = valueAsMoment.subtract(1, periodUnit).format(format);
+            periods.push(Number.parseInt(period, 10));
+        }
+
+        periods.reverse();
+
+        return periods;
+    }
+
+    _lastNMonths(valueAsMoment, num) {
+        return this._lastNPeriods(valueAsMoment, 'months', 'YYYYMM', num);
+    }
+
+    _lastNWeeks(valueAsMoment, num) {
+        return this._lastNPeriods(valueAsMoment, 'weeks', 'YYYYMMWW', num);
+    }
+
+    _lastNDays(valueAsMoment, num) {
+        return this._lastNPeriods(valueAsMoment, 'days', 'YYYYMMDD', num);
+    }
+
+    // {dailyStats: {statsName: {}, ...}, weeklyStats: {statsName: {}, ...} ...}
+    _aggregatePeriod(stats, currentPeriod, lastNPeriods, numPeriods, statsGroup, signalName, value = 1) {
+        // Value in doc - D
+        //
+        // A) N1 N2 N3 N4 N5 C
+        // B) N1 N2 N3 N4 N5 C=D <=== simply aggregate
+        // C) D … N1 N2 N3 N4 N5 C <=== zero pad… D is less than N1
+        // D) N1 N2 N3=D N4 N5 C  <=== pick values till N2, pick D, zero pad N4 and N5
+        // E) N1 N2 N3 N4 N5 C … D <=== ignore here… D is more than C
+        // find out if currentPeriod is same as timeInUnit in oldDoc
+        // if yes, then simply aggregate the new signal value
+        // if not, then check
+        //      (a) oldDoc.timeInUnit is less than N1 ==> zero pad all lastNPeriods
+        //      (b) oldDoc.timeInUnit is more than currentPeriod ==> signal is old, so ignore
+        //      (c) oldDoc.timeUnit lies somewhere in lastNPeriods, pick values till that index + current value in doc and zero pad rest
+
+        const fieldKey = (field) => `${statsGroup}.${signalName}.${field}`;
+
+        // there may not be any stat too in oldDoc
+        const oldPeriod = _.get(stats, fieldKey('timeInUnit'), 0);
+        const oldLastNValues = _.get(stats, fieldKey('lastNValues'));
+        const oldValue = _.get(stats, fieldKey('value'), 0);
+
+        if (oldPeriod) {
+            // periods are same
+            if (oldPeriod === currentPeriod) {
+                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
+                _.set(stats, fieldKey('value'), oldValue + value);
+            } else if (oldPeriod >= lastNPeriods[0] && oldPeriod < currentPeriod) {
+                // find the index
+                const index = _.indexOf(lastNPeriods, oldPeriod);
+                if (index < 0) {
+                    return;
+                }
+
+                const lastNValues = new Array(numPeriods);
+                lastNValues[index] = oldValue;
+
+                // TODO: how do we support when lastN values are lesser in length
+                if (oldLastNValues && oldLastNValues.length === numPeriods) {
+                    for (let i = 0; i < index; i++) {
+                        lastNValues[i] = oldLastNValues[oldLastNValues.length - index + i];
+                    }
+                } else {
+                    _.fill(lastNValues, 0, 0, index);
+                }
+
+                _.fill(lastNValues, 0, index + 1);
+
+                _.set(stats, fieldKey('timeInUnit'), currentPeriod);
+                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
+                _.set(stats, fieldKey('lastNValues'), lastNValues);
+                _.set(stats, fieldKey('value'), value);
+            } else if (oldPeriod < lastNPeriods[0]) {
+                _.set(stats, fieldKey('timeInUnit'), currentPeriod);
+                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
+                _.set(stats, fieldKey('lastNValues'), null);
+                _.set(stats, fieldKey('value'), value);
+            }
+        } else {
+            _.set(stats, fieldKey('name'), signalName);
+            _.set(stats, fieldKey('timeInUnit'), currentPeriod);
+            _.set(stats, fieldKey('lastUpdateTime'), Date.now());
+            _.set(stats, fieldKey('lastNValues'), null);
+            _.set(stats, fieldKey('value'), value);
+        }
+    }
+
+    _aggregateOverallSignal(stats, signalName, signalValue) {
+        const fieldKey = (field) => `_overallStats.${signalName}.${field}`;
+
+        _.set(stats, fieldKey('name'), signalName);
+        _.set(stats, fieldKey('lastUpdateTime'), Date.now());
+        _.set(stats, fieldKey('value'), signalValue + _.get(stats, fieldKey('value'), 0));
+    }
+
+    _aggregateMonthlySignal(stats, signal, timeAsMoment) {
+        if (!timeAsMoment) {
+            timeAsMoment = moment(signal.timeInUnit, 'YYYYMM');
+        }
+
+        const numPeriods = 12;
+
+        // we aggregate here
+        // get last 12 months
+        const currentMonth = signal.timeInUnit;
+        const lastNMonths = this._lastNMonths(timeAsMoment, numPeriods);
+
+        this._aggregatePeriod(stats, currentMonth, lastNMonths, numPeriods, '_monthlyStats', signal.name, signal.value);
+    }
+
+    _aggregateWeeklySignal(stats, signal, timeAsMoment) {
+        if (!timeAsMoment) {
+            timeAsMoment = moment(signal.timeInUnit, 'YYYYMMWW');
+        }
+
+        const numPeriods = 12;
+
+        // we aggregate here
+        // get last 12 weeks
+        const currentWeek = signal.timeInUnit;
+        const lastNWeeks = this._lastNWeeks(timeAsMoment, numPeriods);
+
+        this._aggregatePeriod(stats, currentWeek, lastNWeeks, numPeriods, '_weeklyStats', signal.name, signal.value);
+    }
+
+    // hardest part is last 7 values and last 30 days rolling values
+    // because for missing period, 0s need to be inserted
+    _aggregateDailySignal(stats, signal, timeAsMoment) {
+        if (!timeAsMoment) {
+            timeAsMoment = moment(signal.timeInUnit, 'YYYYMMDD');
+        }
+
+        const numPeriods = 30;
+
+        // we aggregate here
+        // get last 30 days
+        const currentDay = signal.timeInUnit;
+        const lastNDays = this._lastNDays(timeAsMoment, numPeriods);
+
+        this._aggregatePeriod(stats, currentDay, lastNDays, numPeriods, '_dailyStats', signal.name, signal.value);
+
+        // we identify week from signal
+        // create new signal and invoke _aggregateWeeklySignal
+        const week = this._dayToWeek(timeAsMoment);
+        this._aggregateWeeklySignal(stats, _.defaultsDeep({timeUnit: 'week', timeInUnit: week}, signal), timeAsMoment);
+
+        // we identify month from signal
+        // create new signal and invoke _aggregateMonthlySignal
+        const month = this._dayToMonth(timeAsMoment);
+        this._aggregateMonthlySignal(stats, _.defaultsDeep({timeUnit: 'month', timeInUnit: month}, signal), timeAsMoment);
+    }
+
+    _aggregateInstanceSignal(stats, signal) {
+        // we identify day from signal
+        // create new signal and invoke _aggregateDailySignal
+        const timeAsMoment = moment(signal.timeInUnit);
+        const day = this._timestampToDay(timeAsMoment);
+
+        this._aggregateDailySignal(stats, _.defaultsDeep({timeUnit: 'day', timeInUnit: day}, signal), timeAsMoment);
+    }
+
+    _aggregateSignal(stats, signal) {
+        if (signal.timeUnit === 'timestamp') {
+            this._aggregateInstanceSignal(stats, signal);
+        } else if (signal.timeUnit === 'day') {
+            this._aggregateDailySignal(stats, signal);
+        } else if (signal.timeUnit === 'week') {
+            this._aggregateWeeklySignal(stats, signal);
+        } else if (signal.timeUnit === 'month') {
+            this._aggregateMonthlySignal(stats, signal);
+        }
+
+        // aggregate overall stats
+        this._aggregateOverallSignal(stats, signal.name, signal.value);
+    }
+
+    // now we support only summing up of values
+    // probably later we may support average, weighted average too... this is useful for ratings.
+    _aggregateSignals(newDoc, signalOrArray) {
+        const stats = _(newDoc)
+          .pick('_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats')
+          .mapValues(value => _.keyBy(value, 'name'))
+          .value();
+
+        if (_.isArray(signalOrArray)) {
+            _.forEach(signalOrArray, signal => this._aggregateSignal(stats, signal));
+        } else {
+            this._aggregateSignal(stats, signalOrArray);
+        }
+
+        _.forOwn(stats, (statGroup, statGroupKey) => {
+            newDoc[statGroupKey] = _.values(statGroup);
+
+            return true;
+        });
     }
 
     upsert(request) {
@@ -924,6 +1251,15 @@ class IndexerInternal {
                           newAggregateDoc = _.extend(newAggregateDoc, aggregateDoc);
                       }
 
+                      // aggregating into _dailyStats, _weeklyStats, _monthlyStats, _overallStats, rolling30DaysStats
+                      // signals will come separate in request
+                      // signals: [{name: 'signal', timeUnit: '', timeInUnit: '', value: }]
+                      // if signal is an array then invoke forEach, else invoke for the signal
+                      if (request.signal) {
+                          this._aggregateSignals(newAggregateDoc, request.signal);
+                      }
+
+                      // aggregating as per measuresConfig
                       _.forEach(measuresConfig, measureConfig => {
                           let measureType = null;
                           let measureName = null;
@@ -1014,59 +1350,118 @@ class IndexerInternal {
         return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Upserted ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
-    createLookupDictionary(dictionaryName) {
-        // creates a lucene index for the instanceName:lookup:dictionaryName
-        // schema is pretty much same -- key and any properties
+    partialUpdate(request) {
+        return this.update(_.extend(request, {partial: true}));
     }
 
-    deleteLookupDictionary(dictionaryName) {
-        // deletes a lucene index for the instanceName:lookup:dictionaryName
+    // defineSignal(request) {
+    //     // TODO: signal needs to be defined only if a different type of aggregation is needed, then count / sum
+    // }
+
+    // TODO: let signals that require replace value come through different APIs
+    // TODO: later on this aggregation shall happen using redis cache and at a frequency, not immediate
+    // TODO: write user association with product to files
+    // this method is good when client would integrate individual signals
+    // and possibly along with user context
+    // else he shall be good with using update
+    // /signal/type/id or /signal request.type, request.id, request.signal, request.user
+    addSignal(request) {
+        // const signalSchema = {
+        //     type: '',
+        //     id: '',
+        //     signal: [{
+        //         name: 'name',
+        //         timeUnit: 'timestamp', // timestamp, day, week, month
+        //         timeInUnit: '20160504', // YYYYMMDD value
+        //         value: 1
+        //     }],
+        //     user: {
+        //         id: '',
+        //         aid: '',
+        //         iid: '',
+        //         cid: '',
+        //         hid: '',
+        //         agent: ''
+        //     }
+        // };
+
+        const typeConfig = this.typeConfig(request.type);
+        const id = request.id;
+
+        if (!id) {
+            throw new ValidationError('No ID has been specified', {details: {code: 'UNDEFINED_ID'}});
+        }
+
+        // TODO: validate as per signal schema
+        // TODO: if user is defined, then validate as per user schema
+        if (!request.signal) {
+            throw new ValidationError('No Signal has been specified', {details: {code: 'UNDEFINED_SIGNAL'}});
+        }
+
+        const operation = (lockHandle) =>
+          Promise.resolve(this.get({typeConfig, id}))
+            .then(existingDoc => {
+                if (!existingDoc) {
+                    throw new ValidationError(`SIGNAL: No document found for type=[${request.type}] and id=[${id}]`, {details: {code: 'NOT_EXISTS'}});
+                }
+
+                const newDoc = _.extend({}, existingDoc);
+
+                // aggregate signals here
+                this._aggregateSignals(newDoc, request.signal);
+
+                return this.partialUpdate({typeConfig, id, doc: newDoc, existingDoc, lockHandle, signal: request.signal});
+            });
+
+        const key = `${typeConfig.type}:${id}`;
+
+        return this.lock.usingLock(operation, key, null, (timeTaken) => console.log(Chalk.magenta(`Added Signal for ${typeConfig.type} #${id} in ${timeTaken}ms`)));
     }
 
-    addLookup(dictionaryName, key, value) {
-
-    }
-
-    deleteLookup(dictionaryName, key) {
-
-    }
-
-    updateLookup(dictionaryName, key, value, partial) {
-
-    }
-
-    upsertLookup(dictionaryName, key, value) {
-
-    }
-
-    createSynonymDictionary(dictionaryName) {
-
-    }
-
-    deleteSynonymDictionary(dictionaryName) {
-
-    }
-
-    addSynonym(dictionaryName, ...value) {
-        // all value shall belong to same synonym set
-    }
-
-    deleteSynonym(dictionaryName, ...value) {
-        // all value shall belong to same synonym set
-        // if it is the last value, then delete the synonym set too
-    }
-
-    updateSynonym(dictionaryName, oldValue, newValue) {
-        // update old value of synonym to new value
-    }
-
-    // _createTermDictionary(typeName) {
-    //     // creates a lucene index for the instanceName:term:typeName
-    //     // schema is pretty much same -- field, term, various phonetic encodings
+    // createLookupDictionary(dictionaryName) {
+    //     // creates a lucene index for the instanceName:lookup:dictionaryName
+    //     // schema is pretty much same -- key and any properties
     // }
     //
-    // _deleteTermDictionary(typeName) {
+    // deleteLookupDictionary(dictionaryName) {
+    //     // deletes a lucene index for the instanceName:lookup:dictionaryName
+    // }
     //
+    // addLookup(dictionaryName, key, value) {
+    //
+    // }
+    //
+    // deleteLookup(dictionaryName, key) {
+    //
+    // }
+    //
+    // updateLookup(dictionaryName, key, value, partial) {
+    //
+    // }
+    //
+    // upsertLookup(dictionaryName, key, value) {
+    //
+    // }
+    //
+    // createSynonymDictionary(dictionaryName) {
+    //
+    // }
+    //
+    // deleteSynonymDictionary(dictionaryName) {
+    //
+    // }
+    //
+    // addSynonym(dictionaryName, ...value) {
+    //     // all value shall belong to same synonym set
+    // }
+    //
+    // deleteSynonym(dictionaryName, ...value) {
+    //     // all value shall belong to same synonym set
+    //     // if it is the last value, then delete the synonym set too
+    // }
+    //
+    // updateSynonym(dictionaryName, oldValue, newValue) {
+    //     // update old value of synonym to new value
     // }
 }
 
@@ -1081,6 +1476,7 @@ export default class Indexer {
     errorWrap(promise) {
         return Promise.resolve(promise)
           .catch(error => {
+              console.error('>>> Error', error, error.stack);
               if (error && (error._errorCode === 'VALIDATION_ERROR' || error._errorCode === 'INTERNAL_SERVICE_ERROR')) {
                   // rethrow same error
                   throw error;
@@ -1100,6 +1496,10 @@ export default class Indexer {
 
     partialUpdate(headers, request) {
         return this.errorWrap(this.internal.partialUpdate(request));
+    }
+
+    addSignal(headers, request) {
+        return this.errorWrap(this.internal.addSignal(request));
     }
 
     remove(headers, request) {
@@ -1124,6 +1524,8 @@ export default class Indexer {
 
     registry() {
         return {
+            'signal/:type:/:id': {handler: this.addSignal, method: 'put'},
+            signal: {handler: this.addSignal, method: 'put'},
             upsert: {handler: this.upsert},
             update: {handler: this.update},
             partialUpdate: {handler: this.partialUpdate},
