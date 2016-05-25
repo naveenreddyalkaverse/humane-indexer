@@ -87,10 +87,11 @@ class IndexerInternal {
                 id: (doc) => doc.key,
                 weight: (doc) => doc.count,
                 mode: 'aggregate',
-                aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults}),
-                measures: [
-                    {count: 'COUNT'}
-                ]
+                aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults})
+                
+                // measures: [
+                //     {count: 'COUNT'}
+                // ]
             }
         };
 
@@ -1090,7 +1091,7 @@ class IndexerInternal {
         }
     }
 
-    _aggregateOverallSignal(stats, signalName, signalValue) {
+    _aggregateOverallSignal(stats, signalName, signalValue = 1) {
         const fieldKey = (field) => `_overallStats.${signalName}.${field}`;
 
         _.set(stats, fieldKey('name'), signalName);
@@ -1165,7 +1166,7 @@ class IndexerInternal {
     }
 
     _aggregateSignal(stats, signal) {
-        if (signal.timeUnit === 'timestamp') {
+        if (!signal.timeUnit || signal.timeUnit === 'timestamp') {
             this._aggregateInstanceSignal(stats, signal);
         } else if (signal.timeUnit === 'day') {
             this._aggregateDailySignal(stats, signal);
@@ -1259,63 +1260,65 @@ class IndexerInternal {
                           this._aggregateSignals(newAggregateDoc, request.signal);
                       }
 
-                      // aggregating as per measuresConfig
-                      _.forEach(measuresConfig, measureConfig => {
-                          let measureType = null;
-                          let measureName = null;
-                          let measureFunction = null;
-                          let measureTypeConfig = null;
+                      if (measuresConfig) {
+                          // aggregating as per measuresConfig
+                          _.forEach(measuresConfig, measureConfig => {
+                              let measureType = null;
+                              let measureName = null;
+                              let measureFunction = null;
+                              let measureTypeConfig = null;
 
-                          if (_.isString(measureConfig)) {
-                              measureName = measureConfig;
-                              measureType = 'SUM';
-                          } else if (_.isObject(measureConfig)) {
-                              const config = _.first(_.toPairs(measureConfig));
-                              measureName = config[0];
-                              if (_.isString(config[1])) {
-                                  measureType = config[1];
-                              } else if (_.isFunction(config[1])) {
-                                  measureType = 'FUNCTION';
-                                  measureFunction = config[1];
-                              } else if (_.isObject(config[1])) {
-                                  measureType = config[1].type;
-                                  measureTypeConfig = config[1];
+                              if (_.isString(measureConfig)) {
+                                  measureName = measureConfig;
+                                  measureType = 'SUM';
+                              } else if (_.isObject(measureConfig)) {
+                                  const config = _.first(_.toPairs(measureConfig));
+                                  measureName = config[0];
+                                  if (_.isString(config[1])) {
+                                      measureType = config[1];
+                                  } else if (_.isFunction(config[1])) {
+                                      measureType = 'FUNCTION';
+                                      measureFunction = config[1];
+                                  } else if (_.isObject(config[1])) {
+                                      measureType = config[1].type;
+                                      measureTypeConfig = config[1];
+                                  }
                               }
-                          }
 
-                          if (request.partial && _.isUndefined(doc[measureName])) {
-                              // we skip if new doc does not have value in case of partial update
+                              if (request.partial && _.isUndefined(doc[measureName])) {
+                                  // we skip if new doc does not have value in case of partial update
+                                  return true;
+                              }
+
+                              let value = _.get(existingAggregateDoc, measureName, 0);
+
+                              if (measureType === 'COUNT') {
+                                  value += 1;
+                              } else if (measureType === 'SUM') {
+                                  value += _.get(doc, measureName, 0);
+                              } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
+                                  const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
+
+                                  const totalValue = value * _.get(existingAggregateDoc, countField, 0) + _.get(doc, measureName, 0) * _.get(doc, countField, 0);
+                                  const totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(doc, countField, 0);
+
+                                  value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
+                              } else if (measureType === 'FUNCTION') {
+                                  value = measureFunction(newAggregateDoc, opType);
+
+                                  const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
+                                  if (modifier) {
+                                      value = _.invoke(Math, 'log1p', value);
+                                  }
+
+                                  value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
+                              }
+
+                              newAggregateDoc[measureName] = value;
+
                               return true;
-                          }
-
-                          let value = _.get(existingAggregateDoc, measureName, 0);
-
-                          if (measureType === 'COUNT') {
-                              value += 1;
-                          } else if (measureType === 'SUM') {
-                              value += _.get(doc, measureName, 0);
-                          } else if (measureType === 'AVERAGE' || measureType === 'WEIGHTED_AVERAGE') {
-                              const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
-
-                              const totalValue = value * _.get(existingAggregateDoc, countField, 0) + _.get(doc, measureName, 0) * _.get(doc, countField, 0);
-                              const totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(doc, countField, 0);
-
-                              value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
-                          } else if (measureType === 'FUNCTION') {
-                              value = measureFunction(newAggregateDoc, opType);
-
-                              const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
-                              if (modifier) {
-                                  value = _.invoke(Math, 'log1p', value);
-                              }
-
-                              value = _.round(value, measureTypeConfig && measureTypeConfig.round || 3);
-                          }
-
-                          newAggregateDoc[measureName] = value;
-
-                          return true;
-                      });
+                          });
+                      }
 
                       if (this.logLevel === TRACE_LOG_LEVEL) {
                           console.log('Aggregation time: ', key, (performanceNow() - startTime).toFixed(3));
