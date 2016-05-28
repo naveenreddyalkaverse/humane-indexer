@@ -88,90 +88,92 @@ class IndexerInternal {
                 weight: (doc) => doc.count,
                 mode: 'aggregate',
                 aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults})
-                
+
                 // measures: [
                 //     {count: 'COUNT'}
                 // ]
             }
         };
 
+        const indices = config.indicesConfig.indices || {};
+
+        _.forEach(DefaultTypes, (type, key) => this.enhanceType(indices, key, type));
+        _.forEach(config.indicesConfig.types, (type, key) => this.enhanceType(indices, key, type));
+
         // TODO: validate indices config are proper
         this.indicesConfig = _.defaultsDeep(config.indicesConfig, {
+            indices,
             types: DefaultTypes
         });
 
-        if (!this.indicesConfig.indices) {
-            this.indicesConfig.indices = {};
+        // console.log('Final indices config for instance: ', this.instanceName, JSON.stringify(this.indicesConfig, null, 2));
+    }
+
+    enhanceType(indices, key, type) {
+        if (!type.type) {
+            type.type = key;
         }
 
-        const indices = this.indicesConfig.indices;
-
-        _.forEach(this.indicesConfig.types, (type, key) => {
-            if (!type.type) {
-                type.type = key;
+        let index = indices[type.type];
+        if (!index) {
+            let indexStore = null;
+            if (type.index) {
+                indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
+            } else {
+                indexStore = `${_.toLower(this.instanceName)}_store`;
             }
 
-            let index = indices[type.type];
-            if (!index) {
-                let indexStore = null;
-                if (type.index) {
-                    indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
-                } else {
-                    indexStore = `${_.toLower(this.instanceName)}_store`;
-                }
+            // we build index
+            indices[type.type] = index = {
+                store: indexStore,
+                analysis: AnalysisSetting
+            };
 
-                // we build index
-                indices[indexStore] = index = {
-                    store: indexStore,
-                    analysis: AnalysisSetting
+            if (!_.isUndefined(type.did_you_mean_enabled)) {
+                index.indexSettings = {
+                    did_you_mean_enabled: type.did_you_mean_enabled
                 };
-
-                if (!_.isUndefined(type.did_you_mean_enabled)) {
-                    index.indexSettings = {
-                        did_you_mean_enabled: type.did_you_mean_enabled
-                    };
-                }
             }
+        }
 
-            type.index = index.store;
+        type.index = index.store;
 
-            if (!type.weight) {
-                type.weight = () => 1.0;
-            }
+        if (!type.weight) {
+            type.weight = () => 1.0;
+        }
 
-            if (!type.id) {
-                type.id = (doc) => doc.id;
-            }
+        if (!type.id) {
+            type.id = (doc) => doc.id;
+        }
 
-            // TODO: ideally these stats can reside in another DB
-            if (type.mapping && !type.mapping._dailyStats) {
-                type.mapping._dailyStats = StatsMapping;
-            }
+        // TODO: ideally these stats can reside in another DB
+        if (type.mapping && !type.mapping._dailyStats) {
+            type.mapping._dailyStats = StatsMapping;
+        }
 
-            if (type.mapping && !type.mapping._weeklyStats) {
-                type.mapping._weeklyStats = StatsMapping;
-            }
+        if (type.mapping && !type.mapping._weeklyStats) {
+            type.mapping._weeklyStats = StatsMapping;
+        }
 
-            if (type.mapping && !type.mapping._monthlyStats) {
-                type.mapping._monthlyStats = StatsMapping;
-            }
+        if (type.mapping && !type.mapping._monthlyStats) {
+            type.mapping._monthlyStats = StatsMapping;
+        }
 
-            if (type.mapping && !type.mapping._overallStats) {
-                type.mapping._overallStats = OverallStatsMapping;
-            }
+        if (type.mapping && !type.mapping._overallStats) {
+            type.mapping._overallStats = OverallStatsMapping;
+        }
 
-            if (type.mapping && !type.mapping._weight) {
-                type.mapping._weight = WeightMapping;
-            }
+        if (type.mapping && !type.mapping._weight) {
+            type.mapping._weight = WeightMapping;
+        }
 
-            if (type.mapping && !type.mapping._lang) {
-                type.mapping._lang = LangMapping;
-            }
+        if (type.mapping && !type.mapping._lang) {
+            type.mapping._lang = LangMapping;
+        }
 
-            if (!type.lang) {
-                type.lang = () => 'en';
-            }
-        });
+        if (!type.lang) {
+            type.lang = () => 'en';
+        }
     }
 
     shutdown() {
@@ -889,7 +891,7 @@ class IndexerInternal {
         // TODO: transform may not well behave for partial document
         // TODO: who defines undefined state for transform
         let newDoc = request.doc;
-        if (transform && _.isFunction(transform)) {
+        if (transform && _.isFunction(transform) && !request.partial) {
             newDoc = transform(newDoc) || newDoc;
         }
 

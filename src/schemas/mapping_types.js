@@ -82,8 +82,25 @@ export const $Text = {
         raw: $Keyword,
 
         humane: {
-            type: 'string',
+            type: 'humane_text',
             analyzer: 'humane_text_analyzer'
+        },
+        shingle: {
+            type: 'string',
+            analyzer: 'humane_shingle_text_analyzer'
+        }
+    }
+};
+
+export const $DescriptiveText = {
+    type: 'string',
+    analyzer: 'humane_standard_analyzer',
+    fields: {
+        raw: $Keyword,
+
+        humane: {
+            type: 'humane_descriptive_text',
+            analyzer: 'humane_descriptive_text_analyzer'
         },
         shingle: {
             type: 'string',
