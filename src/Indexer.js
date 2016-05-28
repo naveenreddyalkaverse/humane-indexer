@@ -114,17 +114,17 @@ class IndexerInternal {
             type.type = key;
         }
 
-        let index = indices[type.type];
-        if (!index) {
-            let indexStore = null;
-            if (type.index) {
-                indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
-            } else {
-                indexStore = `${_.toLower(this.instanceName)}_store`;
-            }
+        let indexStore = null;
+        if (type.index) {
+            indexStore = `${_.toLower(this.instanceName)}:${_.snakeCase(type.index)}_store`;
+        } else {
+            indexStore = `${_.toLower(this.instanceName)}_store`;
+        }
 
+        let index = indices[indexStore];
+        if (!index) {
             // we build index
-            indices[type.type] = index = {
+            indices[indexStore] = index = {
                 store: indexStore,
                 analysis: AnalysisSetting
             };
