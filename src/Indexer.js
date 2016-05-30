@@ -427,7 +427,7 @@ class IndexerInternal {
           .then(response => {
               let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
 
-              result = !!result ? result.fields : null;
+              result = !_.isUndefined(result) && !_.isNull(result) ? _.get(result, 'fields', {}) : null;
 
               if (result) {
                   _.forEach(fields, field => {
@@ -537,7 +537,7 @@ class IndexerInternal {
             return aggregates;
         };
 
-        const buildMeasures = (aggregateData, aggregateConfig, opType) => {
+        const buildMeasures = (aggregateData, aggregateConfig, aggregateOpType) => {
             const id = aggregateData.id;
             const aggregate = aggregateData.aggregate;
 
@@ -553,21 +553,23 @@ class IndexerInternal {
                 .then(cachedAggregateData => {
                     if (!cachedAggregateData) {
                         return this.optimisedGet({typeConfig: aggregateIndexConfig, id}, measuresConfig)
-                          .then(result => (result && {doc: result, opType, id, type: aggregateIndexType} || null));
+                          .then(result => (result && {doc: result, opType: UPDATE_OP, id, type: aggregateIndexType} || null));
                     }
 
                     return cachedAggregateData;
                 })
                 .then(existingAggregateData => {
+                    let opType = null;
                     if (!existingAggregateData) {
-                        if (opType === UPDATE_OP) {
-                            opType = ADD_OP;
-                        } else if (opType === REMOVE_OP) {
+                        opType = ADD_OP;
+                        if (aggregateOpType === UPDATE_OP) {
+                            aggregateOpType = ADD_OP;
+                        } else if (aggregateOpType === REMOVE_OP) {
                             // if it does not exist what to remove ?
                             return true;
                         }
                     } else {
-                        opType = existingAggregateData.opType || opType;
+                        opType = existingAggregateData.opType || UPDATE_OP;
                     }
 
                     let existingAggregateDoc = null;
@@ -613,19 +615,19 @@ class IndexerInternal {
                         let value = _.get(existingAggregateDoc, measureName, 0);
 
                         if (measureType === 'COUNT') {
-                            if (opType === ADD_OP) {
+                            if (aggregateOpType === ADD_OP) {
                                 // simply SUM the values here
                                 value += 1;
-                            } else if (opType === REMOVE_OP) {
+                            } else if (aggregateOpType === REMOVE_OP) {
                                 // simply REDUCE the values here
                                 value -= 1;
                             }
                         } else if (measureType === 'SUM') {
-                            if (opType === ADD_OP) {
+                            if (aggregateOpType === ADD_OP) {
                                 value += _.get(newDoc, measureName, 0);
-                            } else if (opType === UPDATE_OP) {
+                            } else if (aggregateOpType === UPDATE_OP) {
                                 value += (_.get(newDoc, measureName, 0) - _.get(existingDoc, measureName, 0));
-                            } else if (opType === REMOVE_OP) {
+                            } else if (aggregateOpType === REMOVE_OP) {
                                 // simply REDUCE the values here
                                 value -= _.get(existingDoc, measureName, 0);
                             }
@@ -636,20 +638,20 @@ class IndexerInternal {
                             const countField = (measureType === 'AVERAGE') ? measureTypeConfig.count : measureTypeConfig.weight;
 
                             value = value * _.get(existingAggregateDoc, measureTypeConfig.count, 0);
-                            if (opType === ADD_OP) {
+                            if (aggregateOpType === ADD_OP) {
                                 totalCount = _.get(existingAggregateDoc, countField, 0) + _.get(newDoc, countField, 0);
                                 totalValue = value + _.get(newDoc, measureName, 0) * _.get(newDoc, countField, 0);
-                            } else if (opType === UPDATE_OP) {
+                            } else if (aggregateOpType === UPDATE_OP) {
                                 totalCount = _.get(existingAggregateDoc, countField, 0) - _.get(existingDoc, countField, 0) + _.get(newDoc, countField, 0);
                                 totalValue = value - _.get(existingDoc, measureName, 0) * _.get(existingDoc, countField, 0) + _.get(newDoc, measureName, 0) * _.get(newDoc, countField, 0);
-                            } else if (opType === REMOVE_OP) {
+                            } else if (aggregateOpType === REMOVE_OP) {
                                 totalCount = _.get(existingAggregateDoc, countField, 0) - _.get(existingDoc, countField, 0);
                                 totalValue = value - _.get(existingDoc, measureName, 0) * _.get(existingDoc, countField, 0);
                             }
 
                             value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
                         } else if (measureType === 'FUNCTION') {
-                            value = measureFunction(newAggregateDoc, opType);
+                            value = measureFunction(newAggregateDoc, aggregateOpType);
 
                             const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
                             if (modifier) {
@@ -1236,7 +1238,7 @@ class IndexerInternal {
                       return cachedAggregateData;
                   })
                   .then(existingAggregateData => {
-                      const opType = existingAggregateData && existingAggregateData.opType || ADD_OP;
+                      const aggregateOpType = ADD_OP;
 
                       const aggregateDoc = typeConfig.aggregateBuilder(existingAggregateData && existingAggregateData.doc, doc);
 
@@ -1306,7 +1308,7 @@ class IndexerInternal {
 
                                   value = _.round(totalCount > 0 ? totalValue / totalCount : 0, measureTypeConfig.round || 3);
                               } else if (measureType === 'FUNCTION') {
-                                  value = measureFunction(newAggregateDoc, opType);
+                                  value = measureFunction(newAggregateDoc, aggregateOpType);
 
                                   const modifier = measureTypeConfig && measureTypeConfig.modifier || 'log1p';
                                   if (modifier) {
@@ -1326,7 +1328,7 @@ class IndexerInternal {
                           console.log('Aggregation time: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
-                      return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType, id, type: typeConfig.type});
+                      return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType: existingAggregateData.opType || ADD_OP, id, type: typeConfig.type});
                   })
                   .then(() => {
                       if (this.logLevel === TRACE_LOG_LEVEL) {
