@@ -79,7 +79,7 @@ export const $Text = {
     type: 'string',
     analyzer: 'humane_standard_analyzer',
     fields: {
-        raw: $Keyword,
+        raw: $IdentityText,
 
         humane: {
             type: 'humane_text',
@@ -96,8 +96,6 @@ export const $DescriptiveText = {
     type: 'string',
     analyzer: 'humane_standard_analyzer',
     fields: {
-        raw: $Keyword,
-
         humane: {
             type: 'humane_descriptive_text',
             analyzer: 'humane_descriptive_text_analyzer'
@@ -113,7 +111,8 @@ export const $VernacularText = {
     type: 'string',
     analyzer: 'humane_standard_analyzer',
     fields: {
-        raw: $Keyword,
+        raw: $IdentityText,
+        
         vernacular: {
             type: 'string',
             analyzer: 'humane_vernacular_analyzer'
