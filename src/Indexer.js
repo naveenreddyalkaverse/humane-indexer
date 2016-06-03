@@ -72,38 +72,38 @@ const SignalAggregateTimeUnitMap = {
 };
 
 const StatsMappingFields = {
-    Name: 'name',
+    // Name: 'name',
     TimeInUnit: 'timeInUnit',
     LastUpdateTime: 'lastUpdateTime',
     LastNStats: 'lastNStats',
     Value: 'value'
 };
 
-const StatsMapping = {
-    type: 'nested',
-    properties: {
-        name: '$Keyword',
-        value: '$Long',
-        timeInUnit: '$Long',
-        lastUpdateTime: '$Date',
-        lastNStats: {
-            type: 'nested',
-            properties: {
-                value: '$Long',
-                timeInUnit: '$Long'
-            }
-        }
-    }
-};
-
-const OverallStatsMapping = {
-    type: 'nested',
-    properties: {
-        name: '$Keyword',
-        value: '$Long',
-        lastUpdateTime: '$Date'
-    }
-};
+// const StatsMapping = {
+//     type: 'object'
+//     // properties: {
+//     //     name: '$Keyword',
+//     //     value: '$Long',
+//     //     timeInUnit: '$Long',
+//     //     lastUpdateTime: '$Date',
+//     //     lastNStats: {
+//     //         type: 'nested',
+//     //         properties: {
+//     //             value: '$Long',
+//     //             timeInUnit: '$Long'
+//     //         }
+//     //     }
+//     // }
+// };
+//
+// const OverallStatsMapping = {
+//     type: 'object'
+//     // properties: {
+//     //     name: '$Keyword',
+//     //     value: '$Long',
+//     //     lastUpdateTime: '$Date'
+//     // }
+// };
 
 const LangMapping = '$Keyword';
 
@@ -177,30 +177,66 @@ class IndexerInternal {
 
         type.index = index.store;
 
-        // ==========================================================
-        // Stats Mapping
+        if (!type.dynamic_templates) {
+            type.dynamic_templates = [
+                {
+                    statsGroup: {
+                        match_mapping_type: 'object',
+                        match: '_*Stats',
+                        mapping: {
+                            type: 'object'
+                        }
+                    }
+                },
+                {
+                    stats: {
+                        match_mapping_type: 'object',
+                        path_match: '_*Stats.*',
+                        mapping: {
+                            type: 'object',
+                            properties: {
+                                // name: this.getMapping('$Keyword'),
+                                value: this.getMapping('$Long'),
+                                timeInUnit: this.getMapping('$Long'),
+                                lastUpdateTime: this.getMapping('$Date'),
+                                lastNStats: {
+                                    type: 'nested',
+                                    properties: {
+                                        value: this.getMapping('$Long'),
+                                        timeInUnit: this.getMapping('$Long')
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ];
+        }
+
+        // // ==========================================================
+        // // Stats Mapping
+        // //
+        // // ideally these stats can reside in another DB ?
+        // if (type.mapping && !type.mapping._hourlyStats) {
+        //     type.mapping._hourlyStats = StatsMapping;
+        // }
         //
-        // ideally these stats can reside in another DB ?
-        if (type.mapping && !type.mapping._hourlyStats) {
-            type.mapping._hourlyStats = StatsMapping;
-        }
-
-        if (type.mapping && !type.mapping._dailyStats) {
-            type.mapping._dailyStats = StatsMapping;
-        }
-
-        if (type.mapping && !type.mapping._weeklyStats) {
-            type.mapping._weeklyStats = StatsMapping;
-        }
-
-        if (type.mapping && !type.mapping._monthlyStats) {
-            type.mapping._monthlyStats = StatsMapping;
-        }
-
-        if (type.mapping && !type.mapping._overallStats) {
-            type.mapping._overallStats = OverallStatsMapping;
-        }
-        // ==========================================================
+        // if (type.mapping && !type.mapping._dailyStats) {
+        //     type.mapping._dailyStats = StatsMapping;
+        // }
+        //
+        // if (type.mapping && !type.mapping._weeklyStats) {
+        //     type.mapping._weeklyStats = StatsMapping;
+        // }
+        //
+        // if (type.mapping && !type.mapping._monthlyStats) {
+        //     type.mapping._monthlyStats = StatsMapping;
+        // }
+        //
+        // if (type.mapping && !type.mapping._overallStats) {
+        //     type.mapping._overallStats = OverallStatsMapping;
+        // }
+        // // ==========================================================
 
         if (type.mapping && !type.mapping._weight) {
             type.mapping._weight = WeightMapping;
@@ -368,6 +404,7 @@ class IndexerInternal {
                             _all: {
                                 enabled: false
                             },
+                            dynamic_templates: type.dynamic_templates,
                             properties: _.mapValues(type.mapping, property => this.getMapping(property))
                         };
                     });
@@ -406,6 +443,7 @@ class IndexerInternal {
                   _all: {
                       enabled: false
                   },
+                  dynamic_templates: type.dynamic_templates,
                   properties: _.mapValues(type.mapping, property => this.getMapping(property))
               };
           });
@@ -1171,7 +1209,7 @@ class IndexerInternal {
             }
         } else {
             // there is no previous value so simply update the current value
-            _.set(stats, fieldKey(StatsMappingFields.Name), signalName);
+            // _.set(stats, fieldKey(StatsMappingFields.Name), signalName);
             _.set(stats, fieldKey(StatsMappingFields.TimeInUnit), inputPeriod);
             _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
             _.set(stats, fieldKey(StatsMappingFields.Value), signalValue);
@@ -1257,10 +1295,12 @@ class IndexerInternal {
     _aggregateSignals(newDoc, signalOrArray) {
         const updateTime = Date.now();
 
-        const stats = _(newDoc)
-          .pick('_hourlyStats', '_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats')
-          .mapValues(value => _.keyBy(value, 'name'))
-          .value();
+        // const stats = _(newDoc)
+        //   .pick('_hourlyStats', '_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats')
+        //   // .mapValues(value => _.keyBy(value, 'name'))
+        //   .value();
+
+        const stats = newDoc;
 
         if (_.isArray(signalOrArray)) {
             _.forEach(signalOrArray, signal => this._aggregateSignal(stats, signal, updateTime));
@@ -1268,11 +1308,11 @@ class IndexerInternal {
             this._aggregateSignal(stats, signalOrArray, updateTime);
         }
 
-        _.forOwn(stats, (statGroup, statGroupKey) => {
-            newDoc[statGroupKey] = _.values(statGroup);
-
-            return true;
-        });
+        // _.forOwn(stats, (statGroup, statGroupKey) => {
+        //     newDoc[statGroupKey] = _.values(statGroup);
+        //
+        //     return true;
+        // });
     }
 
     upsert(request) {
