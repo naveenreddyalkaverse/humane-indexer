@@ -37,14 +37,62 @@ const HEAD_HTTP_METHOD = 'HEAD';
 
 const AGGREGATE_MODE = 'aggregate';
 
+const SignalAggregateTimeUnitMap = {
+    timestamp: {
+        name: 'timestamp'
+    },
+    hour: {
+        name: 'hour',
+        part: 'hours',
+        format: 'YYYYMMDDHH',
+        numPeriods: 48,
+        statsGroup: '_hourlyStats'
+    },
+    day: {
+        name: 'day',
+        part: 'days',
+        format: 'YYYYMMDD',
+        numPeriods: 90,
+        statsGroup: '_dailyStats'
+    },
+    week: {
+        name: 'week',
+        part: 'weeks',
+        format: 'YYYYMMWW',
+        numPeriods: 12,
+        statsGroup: '_weeklyStats'
+    },
+    month: {
+        name: 'month',
+        part: 'months',
+        format: 'YYYYMM',
+        numPeriods: 12,
+        statsGroup: '_monthlyStats'
+    }
+};
+
+const StatsMappingFields = {
+    Name: 'name',
+    TimeInUnit: 'timeInUnit',
+    LastUpdateTime: 'lastUpdateTime',
+    LastNStats: 'lastNStats',
+    Value: 'value'
+};
+
 const StatsMapping = {
     type: 'nested',
     properties: {
         name: '$Keyword',
-        lastNValues: '$Long',
         value: '$Long',
         timeInUnit: '$Long',
-        lastUpdateTime: '$Date'
+        lastUpdateTime: '$Date',
+        lastNStats: {
+            type: 'nested',
+            properties: {
+                value: '$Long',
+                timeInUnit: '$Long'
+            }
+        }
     }
 };
 
@@ -86,12 +134,8 @@ class IndexerInternal {
                 mapping: SearchQueryMapping,
                 id: (doc) => doc.key,
                 weight: (doc) => doc.count,
-                mode: 'aggregate',
+                mode: AGGREGATE_MODE,
                 aggregateBuilder: (existingDoc, newDoc) => ({key: newDoc.key, _lang: newDoc._lang, query: newDoc.query, unicodeQuery: newDoc.unicodeQuery, hasResults: newDoc.hasResults})
-
-                // measures: [
-                //     {count: 'COUNT'}
-                // ]
             }
         };
 
@@ -101,12 +145,7 @@ class IndexerInternal {
         _.forEach(config.indicesConfig.types, (type, key) => this.enhanceType(indices, key, type));
 
         // TODO: validate indices config are proper
-        this.indicesConfig = _.defaultsDeep(config.indicesConfig, {
-            indices,
-            types: DefaultTypes
-        });
-
-        // console.log('Final indices config for instance: ', this.instanceName, JSON.stringify(this.indicesConfig, null, 2));
+        this.indicesConfig = _.defaultsDeep(config.indicesConfig, {indices, types: DefaultTypes});
     }
 
     enhanceType(indices, key, type) {
@@ -138,15 +177,14 @@ class IndexerInternal {
 
         type.index = index.store;
 
-        if (!type.weight) {
-            type.weight = () => 1.0;
+        // ==========================================================
+        // Stats Mapping
+        //
+        // ideally these stats can reside in another DB ?
+        if (type.mapping && !type.mapping._hourlyStats) {
+            type.mapping._hourlyStats = StatsMapping;
         }
 
-        if (!type.id) {
-            type.id = (doc) => doc.id;
-        }
-
-        // TODO: ideally these stats can reside in another DB
         if (type.mapping && !type.mapping._dailyStats) {
             type.mapping._dailyStats = StatsMapping;
         }
@@ -162,6 +200,7 @@ class IndexerInternal {
         if (type.mapping && !type.mapping._overallStats) {
             type.mapping._overallStats = OverallStatsMapping;
         }
+        // ==========================================================
 
         if (type.mapping && !type.mapping._weight) {
             type.mapping._weight = WeightMapping;
@@ -173,6 +212,14 @@ class IndexerInternal {
 
         if (!type.lang) {
             type.lang = () => 'en';
+        }
+
+        if (!type.weight) {
+            type.weight = () => 1.0;
+        }
+
+        if (!type.id) {
+            type.id = (doc) => doc.id;
         }
     }
 
@@ -205,7 +252,11 @@ class IndexerInternal {
             response = response[0];
         }
 
-        if (this.logLevel === DEBUG_LOG_LEVEL || this.logLevel === TRACE_LOG_LEVEL || (response.statusCode >= 400 && (!okStatusCodes || !okStatusCodes[response.statusCode]) && response.request.method !== HEAD_HTTP_METHOD)) {
+        if (this.logLevel === DEBUG_LOG_LEVEL
+          || this.logLevel === TRACE_LOG_LEVEL
+          || (response.statusCode >= 400
+          && (!okStatusCodes || !okStatusCodes[response.statusCode])
+          && response.request.method !== HEAD_HTTP_METHOD)) {
             console.log();
             console.log(Chalk.blue('------------------------------------------------------'));
             console.log(Chalk.blue.bold(`${response.request.method} ${response.request.href}`));
@@ -427,7 +478,7 @@ class IndexerInternal {
           .then(response => {
               let result = this.handleResponse(response, {404: true}, 'OPTIMISED_GET');
 
-              result = !_.isUndefined(result) && !_.isNull(result) ? _.get(result, 'fields', {}) : null;
+              result = !_.isUndefined(result) && !_.isNull(result) && _.get(result, 'found', false) ? _.get(result, 'fields', {}) : null;
 
               if (result) {
                   _.forEach(fields, field => {
@@ -906,8 +957,6 @@ class IndexerInternal {
         let result = null;
 
         const operation = () =>
-          // TODO: fields for filter, aggregate, measures
-          // TODO: in case of partial update, fetch only fields part of the to be updated document, filter, aggregate, measures
           Promise.resolve(request.existingDoc || this.get({typeConfig, id}))
             .then(existingDoc => {
                 if (!existingDoc) {
@@ -979,223 +1028,244 @@ class IndexerInternal {
 
     _dayToMonth(valueOrMoment) {
         if (!moment.isMoment(valueOrMoment)) {
-            valueOrMoment = moment(valueOrMoment, 'YYYYMMDD');
+            valueOrMoment = moment(valueOrMoment, SignalAggregateTimeUnitMap.day.format);
         }
 
-        return Number.parseInt(valueOrMoment.format('YYYYMM'), 10);
+        return Number.parseInt(valueOrMoment.format(SignalAggregateTimeUnitMap.month.format), 10);
     }
 
     _dayToWeek(valueOrMoment) {
         if (!moment.isMoment(valueOrMoment)) {
-            valueOrMoment = moment(valueOrMoment, 'YYYYMMDD');
+            valueOrMoment = moment(valueOrMoment, SignalAggregateTimeUnitMap.day.format);
         }
 
-        return Number.parseInt(valueOrMoment.format('YYYYMMWW'), 10);
+        return Number.parseInt(valueOrMoment.format(SignalAggregateTimeUnitMap.week.format), 10);
     }
 
-    _timestampToDay(valueOrMoment) {
+    _hourToDay(valueOrMoment) {
+        if (!moment.isMoment(valueOrMoment)) {
+            valueOrMoment = moment(valueOrMoment, SignalAggregateTimeUnitMap.hour.format);
+        }
+
+        return Number.parseInt(valueOrMoment.format(SignalAggregateTimeUnitMap.day.format), 10);
+    }
+
+    _timestampToHour(valueOrMoment) {
         if (!moment.isMoment(valueOrMoment)) {
             valueOrMoment = moment(valueOrMoment);
         }
 
-        return Number.parseInt(valueOrMoment.format('YYYYMMDD'), 10);
+        return Number.parseInt(valueOrMoment.format(SignalAggregateTimeUnitMap.hour.format), 10);
     }
 
-    _lastNPeriods(valueAsMoment, periodUnit, format, num) {
-        valueAsMoment = moment(valueAsMoment);
-
-        const periods = [];
-        for (let i = 0; i < num; i++) {
-            const period = valueAsMoment.subtract(1, periodUnit).format(format);
-            periods.push(Number.parseInt(period, 10));
+    _lastNPeriodStart(inputPeriod, periodUnit, inputPeriodAsMoment) {
+        if (!inputPeriodAsMoment) {
+            inputPeriodAsMoment = moment(inputPeriod, periodUnit.format);
+        } else {
+            // clone
+            inputPeriodAsMoment = moment(inputPeriodAsMoment);
         }
 
-        periods.reverse();
+        const modifiedMoment = inputPeriodAsMoment.subtract(periodUnit.numPeriods, periodUnit.part);
 
-        return periods;
+        return Number.parseInt(modifiedMoment.format(periodUnit.format), 10);
     }
 
-    _lastNMonths(valueAsMoment, num) {
-        return this._lastNPeriods(valueAsMoment, 'months', 'YYYYMM', num);
-    }
+    _aggregatePeriod(stats, inputPeriod, periodUnit, signalName, signalValue = 1, inputPeriodAsMoment, updateTime) {
+        if (!updateTime) {
+            updateTime = Date.now();
+        }
 
-    _lastNWeeks(valueAsMoment, num) {
-        return this._lastNPeriods(valueAsMoment, 'weeks', 'YYYYMMWW', num);
-    }
+        const statsGroup = periodUnit.statsGroup;
 
-    _lastNDays(valueAsMoment, num) {
-        return this._lastNPeriods(valueAsMoment, 'days', 'YYYYMMDD', num);
-    }
-
-    // {dailyStats: {statsName: {}, ...}, weeklyStats: {statsName: {}, ...} ...}
-    _aggregatePeriod(stats, currentPeriod, lastNPeriods, numPeriods, statsGroup, signalName, value = 1) {
-        // Value in doc - D
-        //
-        // A) N1 N2 N3 N4 N5 C
-        // B) N1 N2 N3 N4 N5 C=D <=== simply aggregate
-        // C) D … N1 N2 N3 N4 N5 C <=== zero pad… D is less than N1
-        // D) N1 N2 N3=D N4 N5 C  <=== pick values till N2, pick D, zero pad N4 and N5
-        // E) N1 N2 N3 N4 N5 C … D <=== ignore here… D is more than C
-        // find out if currentPeriod is same as timeInUnit in oldDoc
-        // if yes, then simply aggregate the new signal value
-        // if not, then check
-        //      (a) oldDoc.timeInUnit is less than N1 ==> zero pad all lastNPeriods
-        //      (b) oldDoc.timeInUnit is more than currentPeriod ==> signal is old, so ignore
-        //      (c) oldDoc.timeUnit lies somewhere in lastNPeriods, pick values till that index + current value in doc and zero pad rest
+        if (!inputPeriodAsMoment) {
+            inputPeriodAsMoment = moment(inputPeriod, periodUnit.format);
+        }
 
         const fieldKey = (field) => `${statsGroup}.${signalName}.${field}`;
 
         // there may not be any stat too in oldDoc
-        const oldPeriod = _.get(stats, fieldKey('timeInUnit'), 0);
-        const oldLastNValues = _.get(stats, fieldKey('lastNValues'));
-        const oldValue = _.get(stats, fieldKey('value'), 0);
+        const oldPeriod = _.get(stats, fieldKey(StatsMappingFields.TimeInUnit), 0);
+        const oldLastNStats = _.get(stats, fieldKey(StatsMappingFields.LastNStats));
+        const oldValue = _.get(stats, fieldKey(StatsMappingFields.Value), 0);
+
+        let lastNStats = null;
+        if (oldLastNStats && !_.isEmpty(oldLastNStats)) {
+            lastNStats = oldLastNStats;
+        } else {
+            lastNStats = [];
+        }
+
+        const setInLastNStats = (timeInUnit, value, add) => {
+            let found = false;
+
+            _.forEach(lastNStats, stat => {
+                if (stat.timeInUnit === timeInUnit) {
+                    if (add) {
+                        stat.value = (stat.value || 0) + value;
+                    } else {
+                        stat.value = value;
+                    }
+                    found = true;
+                    return false;
+                }
+
+                return true;
+            });
+
+            if (!found) {
+                lastNStats.push({timeInUnit, value});
+            }
+        };
+
+        const sortedLastNStats = () => _.sortBy(lastNStats, StatsMappingFields.TimeInUnit);
 
         if (oldPeriod) {
-            // periods are same
-            if (oldPeriod === currentPeriod) {
-                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
-                _.set(stats, fieldKey('value'), oldValue + value);
-            } else if (oldPeriod >= lastNPeriods[0] && oldPeriod < currentPeriod) {
-                // find the index
-                const index = _.indexOf(lastNPeriods, oldPeriod);
-                if (index < 0) {
-                    return;
+            const lastNPeriodStart = this._lastNPeriodStart(inputPeriod, periodUnit, inputPeriodAsMoment);
+            const oldNPeriodStart = this._lastNPeriodStart(oldPeriod, periodUnit);
+
+            if (oldPeriod === inputPeriod) {
+                // periods are same
+                // no need to update lastNStats
+                const newSignalValue = oldValue + signalValue;
+
+                _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
+                _.set(stats, fieldKey(StatsMappingFields.Value), newSignalValue);
+
+                setInLastNStats(inputPeriod, newSignalValue);
+                _.set(stats, fieldKey(StatsMappingFields.LastNStats), sortedLastNStats());
+            } else if (oldPeriod < lastNPeriodStart) {
+                // old period falls below the range of input period and its previous n periods
+                // discard all lastNStats
+                // set the value as inputPeriod
+                _.set(stats, fieldKey(StatsMappingFields.TimeInUnit), inputPeriod);
+                _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
+                _.set(stats, fieldKey(StatsMappingFields.Value), signalValue);
+
+                setInLastNStats(inputPeriod, signalValue);
+                _.set(stats, fieldKey(StatsMappingFields.LastNStats), sortedLastNStats());
+            } else if (oldPeriod >= lastNPeriodStart && oldPeriod < inputPeriod) {
+                // oldPeriod fall in range of input period, and previous n periods
+                // set old period value in lastNStats
+                // discard all values from lastNStats that are older than previous n periods
+                // set input period as current
+                if (!_.isEmpty(lastNStats)) {
+                    lastNStats = _.filter(lastNStats, stat => stat.timeInUnit < lastNPeriodStart);
                 }
 
-                const lastNValues = new Array(numPeriods);
-                lastNValues[index] = oldValue;
+                lastNStats.push({timeInUnit: oldPeriod, value: oldValue});
 
-                // TODO: how do we support when lastN values are lesser in length
-                if (oldLastNValues && oldLastNValues.length === numPeriods) {
-                    for (let i = 0; i < index; i++) {
-                        lastNValues[i] = oldLastNValues[oldLastNValues.length - index + i];
-                    }
-                } else {
-                    _.fill(lastNValues, 0, 0, index);
-                }
+                _.set(stats, fieldKey(StatsMappingFields.TimeInUnit), inputPeriod);
+                _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
+                _.set(stats, fieldKey(StatsMappingFields.Value), signalValue);
 
-                _.fill(lastNValues, 0, index + 1);
-
-                _.set(stats, fieldKey('timeInUnit'), currentPeriod);
-                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
-                _.set(stats, fieldKey('lastNValues'), lastNValues);
-                _.set(stats, fieldKey('value'), value);
-            } else if (oldPeriod < lastNPeriods[0]) {
-                _.set(stats, fieldKey('timeInUnit'), currentPeriod);
-                _.set(stats, fieldKey('lastUpdateTime'), Date.now());
-                _.set(stats, fieldKey('lastNValues'), null);
-                _.set(stats, fieldKey('value'), value);
+                setInLastNStats(inputPeriod, signalValue);
+                _.set(stats, fieldKey(StatsMappingFields.LastNStats), sortedLastNStats());
+            } else if (inputPeriod < oldPeriod && inputPeriod >= oldNPeriodStart) {
+                // input period fall in range of old period and its previous n periods
+                // just set the input period value in the lastNStats
+                setInLastNStats(inputPeriod, signalValue, true);
+                _.set(stats, fieldKey(StatsMappingFields.LastNStats), sortedLastNStats());
+            } else if (inputPeriod < oldNPeriodStart) {
+                // we simply ignore...
             }
         } else {
-            _.set(stats, fieldKey('name'), signalName);
-            _.set(stats, fieldKey('timeInUnit'), currentPeriod);
-            _.set(stats, fieldKey('lastUpdateTime'), Date.now());
-            _.set(stats, fieldKey('lastNValues'), null);
-            _.set(stats, fieldKey('value'), value);
+            // there is no previous value so simply update the current value
+            _.set(stats, fieldKey(StatsMappingFields.Name), signalName);
+            _.set(stats, fieldKey(StatsMappingFields.TimeInUnit), inputPeriod);
+            _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
+            _.set(stats, fieldKey(StatsMappingFields.Value), signalValue);
+
+            setInLastNStats(inputPeriod, signalValue);
+            _.set(stats, fieldKey(StatsMappingFields.LastNStats), sortedLastNStats());
         }
     }
 
-    _aggregateOverallSignal(stats, signalName, signalValue = 1) {
+    _aggregateOverallSignal(stats, signalName, signalValue = 1, updateTime) {
         const fieldKey = (field) => `_overallStats.${signalName}.${field}`;
 
-        _.set(stats, fieldKey('name'), signalName);
-        _.set(stats, fieldKey('lastUpdateTime'), Date.now());
-        _.set(stats, fieldKey('value'), signalValue + _.get(stats, fieldKey('value'), 0));
+        _.set(stats, fieldKey(StatsMappingFields.Name), signalName);
+        _.set(stats, fieldKey(StatsMappingFields.LastUpdateTime), updateTime);
+        _.set(stats, fieldKey(StatsMappingFields.Value), signalValue + _.get(stats, fieldKey(StatsMappingFields.Value), 0));
     }
 
-    _aggregateMonthlySignal(stats, signal, timeAsMoment) {
-        if (!timeAsMoment) {
-            timeAsMoment = moment(signal.timeInUnit, 'YYYYMM');
-        }
-
-        const numPeriods = 12;
-
-        // we aggregate here
-        // get last 12 months
-        const currentMonth = signal.timeInUnit;
-        const lastNMonths = this._lastNMonths(timeAsMoment, numPeriods);
-
-        this._aggregatePeriod(stats, currentMonth, lastNMonths, numPeriods, '_monthlyStats', signal.name, signal.value);
+    _aggregateMonthlySignal(stats, signal, timeAsMoment, updateTime) {
+        this._aggregatePeriod(stats, signal.timeInUnit, SignalAggregateTimeUnitMap.month, signal.name, signal.value, timeAsMoment, updateTime);
     }
 
-    _aggregateWeeklySignal(stats, signal, timeAsMoment) {
-        if (!timeAsMoment) {
-            timeAsMoment = moment(signal.timeInUnit, 'YYYYMMWW');
-        }
-
-        const numPeriods = 12;
-
-        // we aggregate here
-        // get last 12 weeks
-        const currentWeek = signal.timeInUnit;
-        const lastNWeeks = this._lastNWeeks(timeAsMoment, numPeriods);
-
-        this._aggregatePeriod(stats, currentWeek, lastNWeeks, numPeriods, '_weeklyStats', signal.name, signal.value);
+    _aggregateWeeklySignal(stats, signal, timeAsMoment, updateTime) {
+        this._aggregatePeriod(stats, signal.timeInUnit, SignalAggregateTimeUnitMap.week, signal.name, signal.value, timeAsMoment, updateTime);
     }
 
-    // hardest part is last 7 values and last 30 days rolling values
-    // because for missing period, 0s need to be inserted
-    _aggregateDailySignal(stats, signal, timeAsMoment) {
+    _aggregateDailySignal(stats, signal, timeAsMoment, updateTime) {
         if (!timeAsMoment) {
-            timeAsMoment = moment(signal.timeInUnit, 'YYYYMMDD');
+            timeAsMoment = moment(signal.timeInUnit, SignalAggregateTimeUnitMap.day.format);
         }
 
-        const numPeriods = 30;
-
-        // we aggregate here
-        // get last 30 days
-        const currentDay = signal.timeInUnit;
-        const lastNDays = this._lastNDays(timeAsMoment, numPeriods);
-
-        this._aggregatePeriod(stats, currentDay, lastNDays, numPeriods, '_dailyStats', signal.name, signal.value);
+        this._aggregatePeriod(stats, signal.timeInUnit, SignalAggregateTimeUnitMap.day, signal.name, signal.value, timeAsMoment, updateTime);
 
         // we identify week from signal
         // create new signal and invoke _aggregateWeeklySignal
         const week = this._dayToWeek(timeAsMoment);
-        this._aggregateWeeklySignal(stats, _.defaultsDeep({timeUnit: 'week', timeInUnit: week}, signal), timeAsMoment);
+        this._aggregateWeeklySignal(stats, _.defaultsDeep({timeUnit: SignalAggregateTimeUnitMap.week.name, timeInUnit: week}, signal), timeAsMoment, updateTime);
 
         // we identify month from signal
         // create new signal and invoke _aggregateMonthlySignal
         const month = this._dayToMonth(timeAsMoment);
-        this._aggregateMonthlySignal(stats, _.defaultsDeep({timeUnit: 'month', timeInUnit: month}, signal), timeAsMoment);
+        this._aggregateMonthlySignal(stats, _.defaultsDeep({timeUnit: SignalAggregateTimeUnitMap.month.name, timeInUnit: month}, signal), timeAsMoment, updateTime);
     }
 
-    _aggregateInstanceSignal(stats, signal) {
+    _aggregateHourlySignal(stats, signal, timeAsMoment, updateTime) {
+        if (!timeAsMoment) {
+            timeAsMoment = moment(signal.timeInUnit, SignalAggregateTimeUnitMap.hour.format);
+        }
+
+        this._aggregatePeriod(stats, signal.timeInUnit, SignalAggregateTimeUnitMap.hour, signal.name, signal.value, timeAsMoment, updateTime);
+
+        const day = this._hourToDay(timeAsMoment);
+        this._aggregateDailySignal(stats, _.defaultsDeep({timeUnit: SignalAggregateTimeUnitMap.day.name, timeInUnit: day}, signal), timeAsMoment, updateTime);
+    }
+
+    _aggregateInstanceSignal(stats, signal, updateTime) {
         // we identify day from signal
-        // create new signal and invoke _aggregateDailySignal
+        // create new signal and invoke _aggregateHourlySignal
         const timeAsMoment = moment(signal.timeInUnit);
-        const day = this._timestampToDay(timeAsMoment);
+        const hour = this._timestampToHour(timeAsMoment);
 
-        this._aggregateDailySignal(stats, _.defaultsDeep({timeUnit: 'day', timeInUnit: day}, signal), timeAsMoment);
+        this._aggregateHourlySignal(stats, _.defaultsDeep({timeUnit: SignalAggregateTimeUnitMap.hour.name, timeInUnit: hour}, signal), timeAsMoment, updateTime);
     }
 
-    _aggregateSignal(stats, signal) {
-        if (!signal.timeUnit || signal.timeUnit === 'timestamp') {
-            this._aggregateInstanceSignal(stats, signal);
-        } else if (signal.timeUnit === 'day') {
-            this._aggregateDailySignal(stats, signal);
-        } else if (signal.timeUnit === 'week') {
-            this._aggregateWeeklySignal(stats, signal);
-        } else if (signal.timeUnit === 'month') {
-            this._aggregateMonthlySignal(stats, signal);
+    _aggregateSignal(stats, signal, updateTime) {
+        if (!signal.timeUnit || signal.timeUnit === SignalAggregateTimeUnitMap.timestamp.name) {
+            this._aggregateInstanceSignal(stats, signal, updateTime);
+        } else if (signal.timeUnit === SignalAggregateTimeUnitMap.hour.name) {
+            this._aggregateHourlySignal(stats, signal, updateTime);
+        } else if (signal.timeUnit === SignalAggregateTimeUnitMap.day.name) {
+            this._aggregateDailySignal(stats, signal, updateTime);
+        } else if (signal.timeUnit === SignalAggregateTimeUnitMap.week.name) {
+            this._aggregateWeeklySignal(stats, signal, updateTime);
+        } else if (signal.timeUnit === SignalAggregateTimeUnitMap.month.name) {
+            this._aggregateMonthlySignal(stats, signal, updateTime);
         }
 
         // aggregate overall stats
-        this._aggregateOverallSignal(stats, signal.name, signal.value);
+        this._aggregateOverallSignal(stats, signal.name, signal.value, updateTime);
     }
 
     // now we support only summing up of values
     // probably later we may support average, weighted average too... this is useful for ratings.
     _aggregateSignals(newDoc, signalOrArray) {
+        const updateTime = Date.now();
+
         const stats = _(newDoc)
-          .pick('_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats')
+          .pick('_hourlyStats', '_dailyStats', '_weeklyStats', '_monthlyStats', '_overallStats')
           .mapValues(value => _.keyBy(value, 'name'))
           .value();
 
         if (_.isArray(signalOrArray)) {
-            _.forEach(signalOrArray, signal => this._aggregateSignal(stats, signal));
+            _.forEach(signalOrArray, signal => this._aggregateSignal(stats, signal, updateTime));
         } else {
-            this._aggregateSignal(stats, signalOrArray);
+            this._aggregateSignal(stats, signalOrArray, updateTime);
         }
 
         _.forOwn(stats, (statGroup, statGroupKey) => {
@@ -1256,10 +1326,9 @@ class IndexerInternal {
                           newAggregateDoc = _.extend(newAggregateDoc, aggregateDoc);
                       }
 
-                      // aggregating into _dailyStats, _weeklyStats, _monthlyStats, _overallStats, rolling30DaysStats
+                      // aggregating into _dailyStats, _weeklyStats, _monthlyStats, _overallStats
                       // signals will come separate in request
                       // signals: [{name: 'signal', timeUnit: '', timeInUnit: '', value: }]
-                      // if signal is an array then invoke forEach, else invoke for the signal
                       if (request.signal) {
                           this._aggregateSignals(newAggregateDoc, request.signal);
                       }
@@ -1328,7 +1397,7 @@ class IndexerInternal {
                           console.log('Aggregation time: ', key, (performanceNow() - startTime).toFixed(3));
                       }
 
-                      return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType: existingAggregateData.opType || ADD_OP, id, type: typeConfig.type});
+                      return this.aggregatorCache.store(key, {doc: newAggregateDoc, existingDoc: existingAggregateDoc, opType: existingAggregateDoc.opType || ADD_OP, id, type: typeConfig.type});
                   })
                   .then(() => {
                       if (this.logLevel === TRACE_LOG_LEVEL) {
@@ -1361,13 +1430,11 @@ class IndexerInternal {
         return this.update(_.extend(request, {partial: true}));
     }
 
-    // defineSignal(request) {
-    //     // TODO: signal needs to be defined only if a different type of aggregation is needed, then count / sum
-    // }
+    // TODO: signal needs to be defined only if a different type of aggregation is needed, than count / sum
+    // defineSignal(request) {}
 
-    // TODO: let signals that require replace value come through different APIs
     // TODO: later on this aggregation shall happen using redis cache and at a frequency, not immediate
-    // TODO: write user association with product to files
+    // let signals that require replace value come through different APIs
     // this method is good when client would integrate individual signals
     // and possibly along with user context
     // else he shall be good with using update
@@ -1405,6 +1472,8 @@ class IndexerInternal {
             throw new ValidationError('No Signal has been specified', {details: {code: 'UNDEFINED_SIGNAL'}});
         }
 
+        // TODO: retrieval of the document could be from cache
+        // TODO: we retrieve only signals
         const operation = (lockHandle) =>
           Promise.resolve(this.get({typeConfig, id}))
             .then(existingDoc => {
@@ -1417,6 +1486,7 @@ class IndexerInternal {
                 // aggregate signals here
                 this._aggregateSignals(newDoc, request.signal);
 
+                // TODO: save here could be to the cache
                 return this.partialUpdate({typeConfig, id, doc: newDoc, existingDoc, lockHandle, signal: request.signal});
             });
 

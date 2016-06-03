@@ -112,10 +112,10 @@ class LocalLock {
 
                 resolve({
                     key, release: () => {
-                        let lockReleaseStartTime = null;
+                        // let lockReleaseStartTime = null;
 
                         if (this.logLevel === 'trace') {
-                            lockReleaseStartTime = performanceNow();
+                            // lockReleaseStartTime = performanceNow();
                             console.log('(LocalLock) Releasing Lock: ', key);
                         }
 
